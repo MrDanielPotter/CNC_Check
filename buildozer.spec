@@ -21,8 +21,11 @@ version = 1.0.0
 
 # --- Python и библиотеки ---
 requirements = python3,kivy,android,androidstorage4kivy,kivymd==2.0.0
-# Совместимый AGP для JDK 17
+
+# Совместимый с JDK 17 Android Gradle Plugin
 android.gradle_dependencies = com.android.tools.build:gradle:7.4.2
+# Аргументы для Gradle (устойчивее на CI)
+android.gradle_arguments = -Dorg.gradle.jvmargs=-Xmx4096m --no-daemon
 
 # --- Разрешения ---
 android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAMERA
@@ -34,7 +37,7 @@ fullscreen = 0
 # --- Архитектуры ---
 android.archs = arm64-v8a
 
-# --- SDK/NDK ---
+# --- SDK/NDK (используем подготовленные в workflow) ---
 android.api = 34
 android.minapi = 26
 android.build_tools = 34.0.0
