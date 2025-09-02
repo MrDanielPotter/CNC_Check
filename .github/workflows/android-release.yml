@@ -48,18 +48,17 @@ jobs:
 
           mkdir -p "${SDK}/cmdline-tools"
 
-          # Скачиваем актуальные commandline-tools (совместимы с Java 17)
+          # Commandline-tools (совместимы с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
 
-          # Укладываем как .../cmdline-tools/latest/...
           rm -rf "${SDK}/cmdline-tools/latest"
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
 
-          # Симлинк каталога tools -> cmdline-tools/latest для совместимости с p4a/Buildozer
+          # Симлинк каталога tools -> cmdline-tools/latest для совместимости p4a/Buildozer
           rm -rf "${SDK}/tools"
           ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
 
@@ -67,11 +66,10 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-          # Маркеры пакета, чтобы p4a/Buildozer считал SDK валидным
+          # Маркеры пакета tools, чтобы p4a считал SDK валидным
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
-          # Минимальный package.xml в tools/
           printf '%s\n' \
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
             '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
@@ -100,19 +98,21 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-          # Контрольная проверка
+          # Контроль
           test -d "${P4A_SDK_ROOT}/platforms/android-${ANDROIDAPI}"
           test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
           test -d "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
 
-      - name: "Create p4a Home symlinks to prepared SDK/NDK"
+      - name: "Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)"
         shell: bash
         run: |
           set -e
           mkdir -p "$HOME/.buildozer/android/platform"
           ln -sfn "${P4A_SDK_ROOT}" "$HOME/.buildozer/android/platform/android-sdk"
           ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-${ANDROIDNDKVER}"
-          # На всякий случай экспортируем переменные, которые p4a понимает
+          # alias под имя, которое p4a любит (android-ndk-r25b), чтобы не качал снова
+          ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-r25b"
+          # экспорт на всякий
           echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
@@ -124,7 +124,7 @@ jobs:
           export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
-          # Подстрахуемся: tools -> cmdline-tools/latest
+          # Подстраховка: tools -> cmdline-tools/latest
           if [ ! -e "${ANDROID_SDK_ROOT}/tools" ]; then
             ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
           fi
