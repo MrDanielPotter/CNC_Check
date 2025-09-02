@@ -48,17 +48,13 @@ jobs:
           mkdir -p "${SDK}/cmdline-tools"
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
-
           unzip -l /tmp/cli.zip | sed -n '1,40p'
           rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
-
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-
           mkdir -p "${SDK}/tools/bin"
           ln -sf "${SDK}/cmdline-tools/latest/bin/sdkmanager" "${SDK}/tools/bin/sdkmanager"
-
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
@@ -69,9 +65,7 @@ jobs:
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
-          echo "Java:"
           java -version || true
-          echo "sdkmanager:"
           which sdkmanager && sdkmanager --version
 
           yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
@@ -103,65 +97,104 @@ jobs:
             exit 1
           fi
 
-      - name: "Patch buildozer.spec (SDK/NDK paths, tools, deps, permissions)"
+      - name: "Patch buildozer.spec (sed-only)"
         shell: bash
         run: |
           set -e
           SPEC="buildozer.spec"
-          if [ ! -f "${SPEC}" ]; then
+          if [ ! -f "$SPEC" ]; then
             buildozer init
           fi
 
-          cat > patch_spec.py <<'PY'
-import re, os, io
+          # --- set/update key=value (or append) ---
+          kv () {
+            local key="$1"; shift
+            local val="$1"; shift
+            if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$SPEC"; then
+              sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*$|${key} = ${val}|" "$SPEC"
+            else
+              printf "%s = %s\n" "$key" "$val" >> "$SPEC"
+            fi
+          }
 
-spec_path = "buildozer.spec"
-txt = io.open(spec_path, "r", encoding="utf-8").read()
+          kv "android.sdk_dir" "\$ANDROID_SDK_ROOT"
+          kv "android.ndk_dir" "\$ANDROID_SDK_ROOT/ndk/${ANDROIDNDKVER}"
+          kv "android.build_tools" "${ANDROID_BUILD_TOOLS_VERSION}"
 
-def set_kv(txt, key, value):
-    pat = re.compile(r'^\s*' + re.escape(key) + r'\s*=.*$', re.M)
-    line = f"{key} = {value}"
-    return pat.sub(line, txt) if pat.search(txt) else txt + ("\n" if not txt.endswith("\n") else "") + line + "\n"
+          # requirements: ensure python3,kivy,android,androidstorage4kivy,kivymd==2.0.0
+          if grep -Eq "^[[:space:]]*requirements[[:space:]]*=" "$SPEC"; then
+            CUR_REQ=$(sed -n -E 's/^[[:space:]]*requirements[[:space:]]*=\s*(.*)$/\1/p' "$SPEC")
+          else
+            CUR_REQ=""
+          fi
 
-txt = set_kv(txt, "android.sdk_dir", os.environ.get("ANDROID_SDK_ROOT", "${HOME}/.buildozer/android/platform/android-sdk"))
-txt = set_kv(txt, "android.ndk_dir", os.path.join(os.environ.get("ANDROID_SDK_ROOT", "${HOME}/.buildozer/android/platform/android-sdk"), "ndk", os.environ.get("ANDROIDNDKVER","25.1.8937393")))
-txt = set_kv(txt, "android.build_tools", os.environ.get("ANDROID_BUILD_TOOLS_VERSION","34.0.0"))
+          # normalize: replace any kivymd* to kivymd==2.0.0 and add missing pkgs
+          WANT="python3,kivy,android,androidstorage4kivy,kivymd==2.0.0"
+          IFS=',' read -r -a want_arr <<< "$WANT"
+          IFS=',' read -r -a cur_arr <<< "$CUR_REQ"
+          out=""
+          seen=""
 
-req_pat = re.compile(r'^\s*requirements\s*=.*$', re.M)
-req_line = "requirements = python3,kivy,android,androidstorage4kivy,kivymd==2.0.0"
-m = req_pat.search(txt)
-if m:
-    cur = re.search(r'^\s*requirements\s*=\s*(.*)$', txt, re.M).group(1)
-    parts = [p.strip() for p in cur.split(",") if p.strip()]
-    want = ["python3","kivy","android","androidstorage4kivy","kivymd==2.0.0"]
-    out, seen = [], set()
-    for p in parts + want:
-        base = p.split("==")[0]
-        if base == "kivymd":
-            p = "kivymd==2.0.0"
-        if base not in seen:
-            out.append(p); seen.add(base)
-    txt = req_pat.sub("requirements = " + ",".join(out), txt)
-else:
-    txt += ("\n" if not txt.endswith("\n") else "") + req_line + "\n"
+          add_pkg () {
+            local p="$1"
+            local base="${p%%==*}"
+            case "$base" in
+              kivymd) p="kivymd==2.0.0" ;;
+            esac
+            if ! echo ",$seen," | grep -q ",$base,"; then
+              out="${out}${out:+,}$p"
+              seen="${seen},${base}"
+            fi
+          }
 
-permpat = re.compile(r'^\s*android\.permissions\s*=\s*(.*)$', re.M)
-def merge_perms(s):
-    perms = set([p.strip() for p in s.split(",") if p.strip()])
-    perms.update({"WRITE_EXTERNAL_STORAGE","READ_EXTERNAL_STORAGE","INTERNET","CAMERA"})
-    return "android.permissions = " + ",".join(sorted(perms))
+          for p in "${cur_arr[@]}"; do
+            p=$(echo "$p" | xargs)
+            [ -n "$p" ] && add_pkg "$p"
+          done
+          for p in "${want_arr[@]}"; do
+            add_pkg "$p"
+          done
 
-m = permpat.search(txt)
-if m:
-    cur = m.group(1)
-    txt = permpat.sub(merge_perms(cur), txt)
-else:
-    txt += "android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAMERA\n"
+          if grep -Eq "^[[:space:]]*requirements[[:space:]]*=" "$SPEC"; then
+            sed -i -E "s|^[[:space:]]*requirements[[:space:]]*=.*$|requirements = ${out}|" "$SPEC"
+          else
+            printf "requirements = %s\n" "$out" >> "$SPEC"
+          fi
 
-io.open(spec_path, "w", encoding="utf-8").write(txt)
-print("Patched buildozer.spec")
-PY
-          python3 patch_spec.py
+          # permissions: merge INTERNET, READ/WRITE_EXTERNAL_STORAGE, CAMERA
+          if grep -Eq "^[[:space:]]*android\.permissions[[:space:]]*=" "$SPEC"; then
+            CUR_PERM=$(sed -n -E 's/^[[:space:]]*android\.permissions[[:space:]]*=\s*(.*)$/\1/p' "$SPEC")
+          else
+            CUR_PERM=""
+          fi
+
+          WANT_PERM="INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAMERA"
+          IFS=',' read -r -a wantp_arr <<< "$WANT_PERM"
+          IFS=',' read -r -a curp_arr <<< "$CUR_PERM"
+          pout=""
+          pseen=""
+
+          add_perm () {
+            local p="$1"
+            p=$(echo "$p" | xargs)
+            [ -z "$p" ] && return 0
+            if ! echo ",$pseen," | grep -q ",$p,"; then
+              pout="${pout}${pout:+,}$p"
+              pseen="${pseen},${p}"
+            fi
+          }
+
+          for p in "${curp_arr[@]}"; do add_perm "$p"; done
+          for p in "${wantp_arr[@]}"; do add_perm "$p"; done
+
+          if grep -Eq "^[[:space:]]*android\.permissions[[:space:]]*=" "$SPEC"; then
+            sed -i -E "s|^[[:space:]]*android\.permissions[[:space:]]*=.*$|android.permissions = ${pout}|" "$SPEC"
+          else
+            printf "android.permissions = %s\n" "$pout" >> "$SPEC"
+          fi
+
+          echo "buildozer.spec patched:"
+          grep -E "^(android\.sdk_dir|android\.ndk_dir|android\.build_tools|requirements|android\.permissions)" "$SPEC" || true
 
       - name: "Build APK (release)"
         shell: bash
@@ -175,10 +208,12 @@ PY
 
       - name: "Decode keystore (from GitHub Secret)"
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           set -e
-          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
-            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > mykey.keystore
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > mykey.keystore
             if [ ! -s mykey.keystore ]; then
               echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret."
               exit 1
