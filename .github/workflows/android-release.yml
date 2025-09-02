@@ -157,9 +157,11 @@ jobs:
             '</sdk:sdk-repository>' \
             > "$DST/tools/package.xml"
 
-          # Хак для p4a: нужен sdkmanager именно в tools/bin/
-          mkdir -p "$DST/tools/bin"
-          ln -sfn "$DST/cmdline-tools/latest/bin/sdkmanager" "$DST/tools/bin/sdkmanager"
+          # Хак для p4a: нужен sdkmanager именно в tools/bin/, но только если его нет
+          if [ ! -e "$DST/tools/bin/sdkmanager" ]; then
+            mkdir -p "$DST/tools/bin"
+            ln -sfn "$DST/cmdline-tools/latest/bin/sdkmanager" "$DST/tools/bin/sdkmanager"
+          fi
 
           echo "======= SDK paths p4a will scan ======="
           ls -la "$DST/platforms" || true
