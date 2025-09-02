@@ -35,7 +35,7 @@ jobs:
           set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            git zip unzip wget curl build-essential ccache \
+            git zip unzip wget curl rsync build-essential ccache \
             libffi-dev libssl-dev libsqlite3-dev zlib1g-dev
           python3 -m pip install --upgrade pip
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
@@ -48,7 +48,7 @@ jobs:
 
           mkdir -p "${SDK}/cmdline-tools"
 
-          # Актуальные commandline-tools (совм. с Java 17)
+          # Commandline-tools (совместимы с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
@@ -66,7 +66,7 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-          # Маркеры пакета tools (p4a любит их видеть)
+          # Маркеры пакета tools, чтобы p4a считал SDK валидным
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
@@ -101,7 +101,6 @@ jobs:
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
 
-          # доустанавливаем платформу с 3 попытками (сетевые флаппы)
           for i in 1 2 3; do
             echo ">>> Install attempt $i: platforms;android-34"
             yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" "platforms;android-34" && break || sleep 5
@@ -109,10 +108,8 @@ jobs:
 
           echo ">>> List platforms dir:"
           ls -la "${P4A_SDK_ROOT}/platforms" || true
-          test -d "${P4A_SDK_ROOT}/platforms/android-34" || { echo "android-34 platform missing after install"; exit 1; }
-
-          # Доп. проверка: наличие android.jar (то, что реально ищет p4a/Gradle)
-          test -f "${P4A_SDK_ROOT}/platforms/android-34/android.jar" || { echo "android.jar not found under android-34"; exit 1; }
+          test -d "${P4A_SDK_ROOT}/platforms/android-34"
+          test -f "${P4A_SDK_ROOT}/platforms/android-34/android.jar"
 
       - name: "Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)"
         shell: bash
@@ -125,24 +122,47 @@ jobs:
           echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
-      - name: "Build APK (release)"
+      - name: "Build APK (release) — mirror SDK to $HOME for p4a and run"
         shell: bash
         run: |
           set -e
-          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
-          export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
-          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
+          # p4a реально сканирует дом. путь: ~/.buildozer/android/platform/android-sdk
+          export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          export ANDROID_NDK_HOME="$HOME/.buildozer/android/platform/android-ndk-r25b"
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
 
-          # Подстраховка: tools -> cmdline-tools/latest
-          if [ ! -e "${ANDROID_SDK_ROOT}/tools" ]; then
-            ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
-          fi
+          # Зеркалим подготовленный SDK в домашний SDK p4a (устойчиво против перетирания симлинков)
+          SRC="${{ github.workspace }}/.buildozer/android/platform/android-sdk"
+          DST="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$DST/platforms" "$DST/build-tools" "$DST/ndk" "$DST/cmdline-tools" "$DST/platform-tools"
+
+          rsync -a --delete "$SRC/platforms/"      "$DST/platforms/"
+          rsync -a          "$SRC/build-tools/"    "$DST/build-tools/"
+          rsync -a          "$SRC/ndk/"            "$DST/ndk/"
+          rsync -a          "$SRC/cmdline-tools/"  "$DST/cmdline-tools/"
+          rsync -a          "$SRC/platform-tools/" "$DST/platform-tools/" || true
+
+          # Маркеры и совместимость каталога tools/
+          ln -sfn "$DST/cmdline-tools/latest" "$DST/tools"
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/source.properties"
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/tools/source.properties"
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
+            '  <localPackage path="tools" obsolete="false">' \
+            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
+            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
+            '    <display-name>Android SDK Tools 2</display-name>' \
+            '  </localPackage>' \
+            '</sdk:sdk-repository>' \
+            > "$DST/tools/package.xml"
+
+          echo "======= SDK paths p4a will scan ======="
+          ls -la "$DST/platforms" || true
+          ls -l  "$DST/platforms/android-34/android.jar" || true
 
           echo "======= ENV (ANDROID/P4A/JAVA/GRADLE) ======="
           env | sort | grep -E 'ANDROID|P4A|JAVA|GRADLE' || true
-          echo "======= SDK platforms present ======="
-          ls -la "${ANDROID_SDK_ROOT}/platforms" || true
-          echo "android.jar exists?"; ls -l "${ANDROID_SDK_ROOT}/platforms/android-34/android.jar" || true
 
           rm -f buildozer.log
           echo ">>> START buildozer android release (tee logging)"
