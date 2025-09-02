@@ -51,6 +51,8 @@ jobs:
           unzip -q /tmp/cli.zip -d /tmp/
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
+          # симлинк для совместимости
+          rm -rf "${SDK}/tools"
           mkdir -p "${SDK}/tools/bin"
           ln -sf "${SDK}/cmdline-tools/latest/bin/sdkmanager" "${SDK}/tools/bin/sdkmanager"
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
@@ -73,25 +75,6 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-          if [ -d "${P4A_SDK_ROOT}/build-tools" ]; then
-            find "${P4A_SDK_ROOT}/build-tools" -maxdepth 1 -type d -name "36*" -print -exec rm -rf {} \; || true
-          fi
-
-          test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
-
-      - name: "Patch buildozer.spec"
-        shell: bash
-        run: |
-          set -e
-          SPEC="buildozer.spec"
-          if [ ! -f "$SPEC" ]; then
-            buildozer init
-          fi
-          # добавим AGP совместимый с Java 17
-          if ! grep -q "android.gradle_dependencies" "$SPEC"; then
-            echo "android.gradle_dependencies = com.android.tools.build:gradle:7.4.2" >> "$SPEC"
-          fi
-
       - name: "Build APK (release)"
         shell: bash
         run: |
@@ -99,6 +82,10 @@ jobs:
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
+
+          echo "SDK structure before build:"
+          ls -R "$ANDROID_SDK_ROOT" | head -n 100 || true
+
           rm -f buildozer.log
           buildozer android release
 
