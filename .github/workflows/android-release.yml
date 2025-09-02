@@ -49,15 +49,19 @@ jobs:
           set -e
           SDK="${P4A_SDK_ROOT}"
           mkdir -p "${SDK}/cmdline-tools"
+          # стабильный пакет CLI (содержит lib/ и все нужные jar)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           echo "Downloading: $URL"
-          wget -q "$URL" -O /tmp/cli.zip
+          wget -q "$URL" -o /dev/null -O /tmp/cli.zip
 
-          echo "== List archive contents =="
+          echo "== List archive contents (head) =="
           unzip -l /tmp/cli.zip | sed -n '1,120p'
+
           echo "== Quick presence checks =="
           unzip -l /tmp/cli.zip | grep -q "cmdline-tools/bin/sdkmanager" || { echo "sdkmanager not found in zip"; exit 1; }
-          unzip -l /tmp/cli.zip | grep -q "cmdline-tools/lib/sdkmanager.jar" || { echo "sdkmanager.jar not found in zip"; exit 1; }
+          # В новых CLI нет sdkmanager.jar — проверяем ключевые библиотеки:
+          unzip -l /tmp/cli.zip | grep -q "cmdline-tools/lib/sdklib/tools.sdklib.jar" || { echo "tools.sdklib.jar not found"; exit 1; }
+          unzip -l /tmp/cli.zip | grep -q "cmdline-tools/lib/sdk-common/tools.sdk-common.jar" || { echo "tools.sdk-common.jar not found"; exit 1; }
 
           # Распаковываем во временную папку
           rm -rf /tmp/cmdline-tools
@@ -66,14 +70,6 @@ jobs:
           # Разворачиваем как .../cmdline-tools/latest/{bin,lib}
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-
-          # Обязательная проверка наличия lib/sdkmanager.jar
-          if [ ! -f "${SDK}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
-            echo "ERROR: ${SDK}/cmdline-tools/latest/lib/sdkmanager.jar not found"
-            ls -la "${SDK}/cmdline-tools/latest" || true
-            ls -la "${SDK}/cmdline-tools/latest/lib" || true
-            exit 1
-          fi
 
           chmod +x "${SDK}/cmdline-tools/latest/bin/"* || true
 
@@ -104,15 +100,14 @@ jobs:
 
           echo "==== sdkmanager diagnostics ===="
           echo "sdkmanager bin: $SM"
-          "$SM" --version || true
+          "$SM" --version || { echo "sdkmanager failed to run"; exit 1; }
           echo
 
-          echo "==== classpath check ===="
-          echo "Expecting jars in: ${SDK_LIB}"
+          echo "==== classpath jars (lib) ===="
           ls -1 "${SDK_LIB}" | sed 's/^/  - /'
-          echo
-          echo "Try: java -cp \"${SDK_LIB}/*\" com.android.sdklib.tool.sdkmanager.SdkManagerCli --version"
-          ( java -cp "${SDK_LIB}/*" com.android.sdklib.tool.sdkmanager.SdkManagerCli --version ) || echo "Direct class call failed (ok, using sdkmanager wrapper)"
+          echo "Check key jars:"
+          test -f "${SDK_LIB}/sdklib/tools.sdklib.jar" || { echo "Missing tools.sdklib.jar"; exit 1; }
+          test -f "${SDK_LIB}/sdk-common/tools.sdk-common.jar" || { echo "Missing tools.sdk-common.jar"; exit 1; }
 
           echo
           echo "==== Accept licenses ===="
@@ -127,8 +122,10 @@ jobs:
 
           echo
           echo "==== Clean any preview build-tools symlinks or leftovers ===="
-          # На всякий случай вычищаем rc-превью, если где-то появились
-          find "${P4A_SDK_ROOT}/build-tools" -maxdepth 1 -type d -name "36*" -print -exec rm -rf {} \; || true
+          # На всякий случай вычищаем rc-превью, если где-то всплывут
+          if [ -d "${P4A_SDK_ROOT}/build-tools" ]; then
+            find "${P4A_SDK_ROOT}/build-tools" -maxdepth 1 -type d -name "36*" -print -exec rm -rf {} \; || true
+          fi
 
           echo
           echo "==== Verify build-tools & aidl ===="
