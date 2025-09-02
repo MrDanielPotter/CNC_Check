@@ -1,0 +1,59 @@
+name: Build Android Release APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip build-essential ccache libffi-dev libssl-dev libsqlite3-dev zlib1g-dev
+          pip install --upgrade pip
+          pip install buildozer cython
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
+
+      - name: Build release APK
+        run: |
+          buildozer -v android release
+
+      - name: Sign APK with jarsigner
+        env:
+          STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYPASS: ${{ secrets.KEY_PASSWORD }}
+          ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          jarsigner -verbose -keystore mykey.keystore -storepass "$STOREPASS" -keypass "$KEYPASS" bin/*.apk "$ALIAS"
+
+      - name: Align and Sign using apksigner
+        env:
+          STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYPASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          sudo apt install -y zipalign apksigner
+          for apk in bin/*-release-unsigned.apk; do
+            zipalign -v 4 "$apk" aligned.apk
+            apksigner sign --ks mykey.keystore --ks-pass pass:"$STOREPASS" --key-pass pass:"$KEYPASS" --out signed.apk aligned.apk
+          done
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: CNCChecklist-release.apk
+          path: signed.apk
