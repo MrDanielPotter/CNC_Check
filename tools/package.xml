@@ -1,0 +1,10 @@
+cat > "${ANDROID_SDK_ROOT}/tools/package.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
+  <localPackage path="tools" obsolete="false">
+    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>
+    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>
+    <display-name>Android SDK Tools 2</display-name>
+  </localPackage>
+</sdk:sdk-repository>
+EOF
