@@ -10,15 +10,17 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # SDK ставим туда, куда по умолчанию смотрит buildozer/p4a
+      # SDK/NDK — в дефолтный путь, который ожидают buildozer/p4a
       P4A_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
       ANDROID_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
       ANDROID_HOME: $HOME/.buildozer/android/platform/android-sdk
-      # Явно фиксируем целевые API/Build-Tools
+
+      # Целевые версии
       ANDROIDAPI: "34"
       ANDROIDMINAPI: "26"
       ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
-      # Версия NDK (side-by-side ID для r25b)
+
+      # NDK r25b (side-by-side id)
       ANDROIDNDKVER: "25.1.8937393"
 
     steps:
@@ -40,59 +42,65 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
-      # ========== SDK CLI ==========
-      - name: Install Android SDK Command-line Tools (latest) into Buildozer SDK root
+      # ---------- SDK CLI ----------
+      - name: Install Android SDK Command-line Tools (latest)
         run: |
           mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cli-tools.zip
           unzip -q /tmp/cli-tools.zip -d "${P4A_SDK_ROOT}/cmdline-tools"
           mv "${P4A_SDK_ROOT}/cmdline-tools/cmdline-tools" "${P4A_SDK_ROOT}/cmdline-tools/latest"
 
-          # PATH для sdkmanager/avdmanager и platform-tools
-          echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
+          # Иногда после unzip нет +x на бинарях
+          chmod +x "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/"* || true
 
-          # Совместимость со старым путём, куда иногда смотрит p4a/buildozer
+          # Совместимость со старым путём tools/bin
           mkdir -p "${P4A_SDK_ROOT}/tools/bin"
           ln -sf "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "${P4A_SDK_ROOT}/tools/bin/sdkmanager"
+
+          # Добавим в PATH как fallback (ниже всё равно используем абсолютные пути)
+          echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
 
       - name: Accept Android SDK licenses & install stable SDK packages
         shell: bash
         run: |
-          # Принятие лицензий
-          yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
+          SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          echo "sdkmanager path: $SM"
+          ls -la "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" || true
 
-          # Устанавливаем стабильные пакеты (без preview)
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
+          # Принятие лицензий
+          yes | "$SM" --sdk_root="${P4A_SDK_ROOT}" --licenses || true
+
+          # Установка стабильных пакетов
+          "$SM" --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          # Анти-preview: если p4a попросит 36.1.0-rc1, подсовываем ссылку на 34.0.0
+          # Анти-preview: если p4a попросит 36.1.0-rc1 — подсовываем ссылку на 34.0.0
           if [ ! -d "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1" ]; then
             ln -s "${P4A_SDK_ROOT}/build-tools/34.0.0" "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1"
           fi
 
           # Диагностика
           ls -la "${P4A_SDK_ROOT}/build-tools" || true
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" --list | head -n 60 || true
+          "$SM" --sdk_root="${P4A_SDK_ROOT}" --list | head -n 80 || true
 
-      # ========== NDK ==========
+      # ---------- NDK ----------
       - name: Install Android NDK r25b (side-by-side)
         run: |
-          # Ставим side-by-side NDK r25b в SDK-дерево: $P4A_SDK_ROOT/ndk/25.1.8937393
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" "ndk;${ANDROIDNDKVER}"
+          SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          "$SM" --sdk_root="${P4A_SDK_ROOT}" "ndk;${ANDROIDNDKVER}"
 
-          # Укажем переменные окружения для сборки (p4a умеет их читать)
           echo "ANDROIDNDK=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
-          # Диагностика
           ls -la "${P4A_SDK_ROOT}/ndk" || true
           ls -la "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" || true
+          ls -la "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/ndk-build" || echo "WARN: ndk-build not found (should still be okay)"
 
-      # ========== aidl check ==========
+      # ---------- aidl check ----------
       - name: Verify AIDL presence and version
         run: |
           AIDL_BIN="${P4A_SDK_ROOT}/build-tools/34.0.0/aidl"
@@ -104,16 +112,15 @@ jobs:
           echo "aidl found at: $AIDL_BIN"
           "$AIDL_BIN" --version || (echo "aidl exists but failed to run" && exit 1)
 
-      # ========== Keystore ==========
+      # ---------- Keystore ----------
       - name: Decode keystore (from GitHub Secret)
         run: |
           echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
           test -s mykey.keystore || (echo "Keystore is empty. Check KEYSTORE_FILE secret." && exit 1)
 
-      # ========== Build ==========
+      # ---------- Build ----------
       - name: Build release with Buildozer
         env:
-          # buildozer/p4a будут использовать SDK/NDK из путей выше
           ANDROIDSDK: ${{ env.P4A_SDK_ROOT }}
           ANDROIDNDK: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
           ANDROID_NDK_HOME: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
@@ -121,19 +128,27 @@ jobs:
           P4A_NDK_DIR: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
           P4A_BUILD_TOOLS_VERSION: "34.0.0"
         run: |
-          # Сборка релиза
-          buildozer -v android release
+          echo "ANDROIDSDK=$ANDROIDSDK"
+          echo "ANDROIDNDK=$ANDROIDNDK"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          buildozer --version
+          # сохраняем лог сборки для отладки на случай падений
+          buildozer -v android release | tee buildozer.log
 
-      # ========== Sign ==========
+      # ---------- Sign ----------
       - name: Align & Sign APK (zipalign/apksigner from build-tools 34.0.0)
+        if: always()
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
           KEYPASS:   ${{ secrets.KEY_PASSWORD }}
           ALIAS:     ${{ secrets.KEY_ALIAS }}
         run: |
           set -e
-          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1)
-          test -f "$APK_UNSIGNED" || (echo "Unsigned APK not found" && exit 1)
+          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
+          if [ -z "$APK_UNSIGNED" ]; then
+            echo "No unsigned APK found in bin/. See buildozer.log for details."
+            exit 1
+          fi
 
           ZIPALIGN="${P4A_SDK_ROOT}/build-tools/34.0.0/zipalign"
           APKSIGNER="${P4A_SDK_ROOT}/build-tools/34.0.0/apksigner"
@@ -150,9 +165,17 @@ jobs:
 
           $APKSIGNER verify --print-certs CNCChecklist-signed.apk
 
-      # ========== Artifact ==========
+      # ---------- Artifacts ----------
       - name: Upload signed APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CNCChecklist-release
           path: CNCChecklist-signed.apk
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildozer-log
+          path: buildozer.log
