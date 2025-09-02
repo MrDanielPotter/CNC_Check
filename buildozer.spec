@@ -44,7 +44,7 @@ android.build_tools = 34.0.0
 android.sdk_dir = $ANDROID_SDK_ROOT
 android.ndk_dir = $ANDROID_SDK_ROOT/ndk/25.1.8937393
 android.accept_sdk_license = True
-android.skip_update = True
+android.skip_update = 0
 
 # --- AndroidX ---
 android.enable_androidx = 1
