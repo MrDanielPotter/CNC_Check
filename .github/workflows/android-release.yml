@@ -10,10 +10,15 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Тот самый SDK-root, который использует buildozer/p4a
+      # Тот же SDK-root, что использует buildozer/p4a
       P4A_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
       ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      # Явно подсказуем p4a/buildozer версии
+      ANDROIDAPI: "34"
+      ANDROIDMINAPI: "26"
+      ANDROIDNDKVER: "r25b"
+      ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
 
     steps:
       - name: Checkout repository
@@ -32,7 +37,7 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install buildozer cython
 
-      # Устанавливаем commandline-tools прямо в P4A_SDK_ROOT
+      # Устанавливаем commandline-tools прямо в P4A_SDK_ROOT и делаем "старый" путь tools/bin/sdkmanager
       - name: Install Android SDK command-line tools into Buildozer SDK root
         run: |
           mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
@@ -41,17 +46,19 @@ jobs:
           mv "${P4A_SDK_ROOT}/cmdline-tools/cmdline-tools" "${P4A_SDK_ROOT}/cmdline-tools/latest"
           echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-          # 🧩 СОВМЕСТИМОСТЬ со старым путём Buildozer: создаём tools/bin и симлинк sdkmanager
           mkdir -p "${P4A_SDK_ROOT}/tools/bin"
           ln -sf "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "${P4A_SDK_ROOT}/tools/bin/sdkmanager"
 
-      - name: Accept licenses & install stable SDK packages (34.0.0)
+      - name: Accept licenses & install stable SDK packages
         run: |
           yes | "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses || true
           "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          # На всякий случай покажем список
-          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --list | head -n 50 || true
+          # Хак: если p4a всё равно попросит 36.1-rc1, подсовываем симлинк на 34.0.0
+          if [ ! -d "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1" ]; then
+            ln -s "${P4A_SDK_ROOT}/build-tools/34.0.0" "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1"
+          fi
+          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --list | head -n 80 || true
 
       - name: Decode keystore (from GitHub Secret)
         run: |
