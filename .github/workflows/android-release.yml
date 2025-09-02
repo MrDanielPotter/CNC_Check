@@ -110,9 +110,7 @@ jobs:
           mkdir -p "$HOME/.buildozer/android/platform"
           ln -sfn "${P4A_SDK_ROOT}" "$HOME/.buildozer/android/platform/android-sdk"
           ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-${ANDROIDNDKVER}"
-          # alias под имя, которое p4a любит (android-ndk-r25b), чтобы не качал снова
           ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-r25b"
-          # переменные для p4a
           echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
@@ -135,8 +133,9 @@ jobs:
           ls -R "$ANDROID_SDK_ROOT" | head -n 120 || true
 
           rm -f buildozer.log
-          echo ">>> START buildozer android release"
-          buildozer android release || (echo "Buildozer failed, dumping buildozer.log (if any):" && if [ -f buildozer.log ]; then cat buildozer.log; else echo 'buildozer.log not found'; fi; exit 1)
+          echo ">>> START buildozer android release (tee logging)"
+          set -o pipefail
+          buildozer android release 2>&1 | tee buildozer.log
 
       - name: "Show buildozer log tail"
         if: always()
