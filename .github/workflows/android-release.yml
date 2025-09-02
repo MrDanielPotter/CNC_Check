@@ -50,7 +50,7 @@ jobs:
           mkdir -p "${SDK}"
           mkdir -p "${SDK}/cmdline-tools"
 
-          # Скачиваем актуальные командные инструменты (совместимы с Java 17)
+          # Скачиваем актуальные commandline-tools (совместимы с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
@@ -61,13 +61,25 @@ jobs:
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
 
-          # ВАЖНО: создаём каталог tools и симлинк на latest для обратной совместимости с Buildozer/p4a
+          # Создаём каталог tools и симлинк на latest для обратной совместимости
           rm -rf "${SDK}/tools"
           ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
 
           # Добавляем инструменты в PATH
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
+
+          # Добавляем source.properties в корень и tools/
+          cat > "${SDK}/source.properties" <<EOF
+Pkg.Revision=${ANDROID_BUILD_TOOLS_VERSION}
+Pkg.Path=tools
+EOF
+
+          mkdir -p "${SDK}/tools"
+          cat > "${SDK}/tools/source.properties" <<EOF
+Pkg.Revision=${ANDROID_BUILD_TOOLS_VERSION}
+Pkg.Path=tools
+EOF
 
       - name: "Accept SDK licenses and install SDK/NDK"
         shell: bash
@@ -86,7 +98,7 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-          # Контрольная проверка наличия ключевых каталожных узлов
+          # Контрольная проверка
           test -d "${P4A_SDK_ROOT}/platforms/android-${ANDROIDAPI}"
           test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
           test -d "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
