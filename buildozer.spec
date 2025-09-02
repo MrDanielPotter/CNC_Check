@@ -35,17 +35,18 @@ fullscreen = 0
 android.archs = arm64-v8a
 
 # --- SDK/NDK ---
-# Обязательно прописываем пути, чтобы Buildozer НЕ качал свой SDK
 android.api = 34
 android.minapi = 26
 android.build_tools = 34.0.0
 android.sdk_dir = $ANDROID_SDK_ROOT
 android.ndk_dir = $ANDROID_SDK_ROOT/ndk/25.1.8937393
-# Автоматически соглашаться с лицензиями
 android.accept_sdk_license = True
+android.skip_update = True
 
-# Включаем AndroidX
+# --- AndroidX ---
 android.enable_androidx = 1
 
 # --- Прочее ---
-# android.strip_libs = 1  # уменьшение размера apk
+# android.strip_libs = 1   # уменьшение размера apk
+# icon.filename = %(source.dir)s/media/icon.png
+# presplash.filename = %(source.dir)s/media/presplash.png
