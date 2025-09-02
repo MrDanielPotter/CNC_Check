@@ -20,16 +20,16 @@ jobs:
       ANDROIDNDKVER: "25.1.8937393"
 
     steps:
-      - name: "Checkout"
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "Set up Java 17 (Temurin)"
+      - name: Set up Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: "Install system and Python deps"
+      - name: Install system and Python deps
         shell: bash
         run: |
           set -e
@@ -40,78 +40,65 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
-      - name: "Fetch Android Commandline Tools and layout (with tools symlink)"
+      - name: Fetch Android Commandline Tools and layout (with tools symlink)
         shell: bash
         run: |
           set -e
           SDK="${P4A_SDK_ROOT}"
-
           mkdir -p "${SDK}/cmdline-tools"
-
-          # Commandline-tools (совместимы с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
-
           rm -rf "${SDK}/cmdline-tools/latest"
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-
-          # Симлинк каталога tools -> cmdline-tools/latest для совместимости p4a/Buildozer
           rm -rf "${SDK}/tools"
           ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
-
-          # PATH
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
-
-          # Маркеры пакета tools, чтобы p4a считал SDK валидным
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
-          cat > "${SDK}/tools/package.xml" <<'XML'
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
-  <localPackage path="tools" obsolete="false">
-    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>
-    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>
-    <display-name>Android SDK Tools 2</display-name>
-  </localPackage>
-</sdk:sdk-repository>
-XML
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
+            '  <localPackage path="tools" obsolete="false">' \
+            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
+            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
+            '    <display-name>Android SDK Tools 2</display-name>' \
+            '  </localPackage>' \
+            '</sdk:sdk-repository>' \
+            > "${SDK}/tools/package.xml"
 
-      - name: "Accept licenses & install core SDK/NDK"
+      - name: Accept licenses & install core SDK/NDK
         shell: bash
         run: |
           set -e
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
-
           yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
           sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" \
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-      - name: "Ensure Android platform 34 is installed (retry)"
+      - name: Ensure Android platform 34 is installed (retry)
         shell: bash
         run: |
           set -e
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
-
           for i in 1 2 3; do
             echo ">>> Install attempt $i: platforms;android-34"
             yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" "platforms;android-34" && break || sleep 5
           done
-
           echo ">>> List platforms dir:"
           ls -la "${P4A_SDK_ROOT}/platforms" || true
           test -d "${P4A_SDK_ROOT}/platforms/android-34"
           test -f "${P4A_SDK_ROOT}/platforms/android-34/android.jar"
 
-      - name: "Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)"
+      - name: Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)
         shell: bash
         run: |
           set -e
@@ -122,29 +109,25 @@ XML
           echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
-      - name: "Build APK (release) — mirror SDK to $HOME for p4a and run"
+      - name: Build APK (release) — mirror SDK to $HOME for p4a and run
         shell: bash
         run: |
           set -e
-          # p4a реально сканирует дом. путь: ~/.buildozer/android/platform/android-sdk
           export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
           export ANDROID_NDK_HOME="$HOME/.buildozer/android/platform/android-ndk-r25b"
           export ANDROIDAPI=34
           export ANDROIDMINAPI=26
           export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
 
-          # Зеркалим подготовленный SDK в домашний SDK p4a
           SRC="${{ github.workspace }}/.buildozer/android/platform/android-sdk"
           DST="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$DST/platforms" "$DST/build-tools" "$DST/ndk" "$DST/cmdline-tools" "$DST/platform-tools"
-
           rsync -a --delete "$SRC/platforms/"      "$DST/platforms/"
           rsync -a          "$SRC/build-tools/"    "$DST/build-tools/"
           rsync -a          "$SRC/ndk/"            "$DST/ndk/"
           rsync -a          "$SRC/cmdline-tools/"  "$DST/cmdline-tools/"
           rsync -a          "$SRC/platform-tools/" "$DST/platform-tools/" || true
 
-          # Маркеры, tools/, и sdkmanager в tools/bin (p4a любит этот путь)
           ln -sfn "$DST/cmdline-tools/latest" "$DST/tools"
           mkdir -p "$DST/tools/bin"
           if [ ! -e "$DST/tools/bin/sdkmanager" ]; then
@@ -152,22 +135,21 @@ XML
           fi
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/source.properties"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/tools/source.properties"
-          cat > "$DST/tools/package.xml" <<'XML'
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
-  <localPackage path="tools" obsolete="false">
-    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>
-    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>
-    <display-name>Android SDK Tools 2</display-name>
-  </localPackage>
-</sdk:sdk-repository>
-XML
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
+            '  <localPackage path="tools" obsolete="false">' \
+            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
+            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
+            '    <display-name>Android SDK Tools 2</display-name>' \
+            '  </localPackage>' \
+            '</sdk:sdk-repository>' \
+            > "$DST/tools/package.xml"
 
           echo "======= SDK paths p4a will scan ======="
           ls -la "$DST/platforms" || true
           ls -l  "$DST/platforms/android-34/android.jar" || true
 
-          # ВАЖНО: насильно передаём пути SDK/NDK самому p4a
           export ANDROIDSDK="$ANDROID_SDK_ROOT"
           export P4A_CMDLINE_ARGS="--sdk-dir=$ANDROID_SDK_ROOT --ndk-dir=$ANDROID_NDK_HOME --android-api=$ANDROIDAPI --ndk-api=$ANDROIDMINAPI"
 
@@ -179,18 +161,18 @@ XML
           set -o pipefail
           buildozer android release 2>&1 | tee buildozer.log
 
-      - name: "Show buildozer log tail"
+      - name: Show buildozer log tail
         if: always()
         shell: bash
         run: |
           if [ -f buildozer.log ]; then
             echo "===== LAST 300 lines of buildozer.log ====="
             tail -n 300 buildozer.log
-          else:
+          else
             echo "No buildozer.log was generated."
           fi
 
-      - name: "Decode keystore (from GitHub Secret)"
+      - name: Decode keystore (from GitHub Secret)
         if: always()
         shell: bash
         env:
@@ -207,7 +189,7 @@ XML
             echo "No ANDROID_KEYSTORE_BASE64 provided — skipping decode."
           fi
 
-      - name: "Align and Sign APK"
+      - name: Align and Sign APK
         if: always()
         shell: bash
         env:
@@ -221,14 +203,11 @@ XML
             echo "No unsigned APK found in bin/ — skipping sign."
             exit 0
           fi
-
           ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
           APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
           test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
           test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
-
           "$ZIPALIGN" -v -p 4 "$APK_UNSIGNED" aligned.apk
-
           if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
             "$APKSIGNER" sign \
               --ks mykey.keystore \
@@ -242,7 +221,7 @@ XML
             mv aligned.apk CNCChecklist-unaligned-unsigned.apk
           fi
 
-      - name: "Upload APK artifact"
+      - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -252,7 +231,7 @@ XML
             CNCChecklist-unaligned-unsigned.apk
           if-no-files-found: warn
 
-      - name: "Upload buildozer log"
+      - name: Upload buildozer log
         if: always()
         uses: actions/upload-artifact@v4
         with:
