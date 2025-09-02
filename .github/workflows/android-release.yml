@@ -9,6 +9,12 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
 
+    env:
+      # Тот самый SDK-root, который использует buildozer/p4a
+      P4A_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,39 +32,32 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install buildozer cython
 
-      # ВАЖНО: готовим тот же SDK-root, который использует buildozer/p4a:
-      - name: Prepare Android SDK root path used by Buildozer
-        run: |
-          export P4A_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
-          echo "P4A_SDK_ROOT=${P4A_SDK_ROOT}" >> $GITHUB_ENV
-          mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
-
+      # Устанавливаем commandline-tools прямо в P4A_SDK_ROOT
       - name: Install Android SDK command-line tools into Buildozer SDK root
         run: |
+          mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O /tmp/cli-tools.zip
           unzip -q /tmp/cli-tools.zip -d "${P4A_SDK_ROOT}/cmdline-tools"
           mv "${P4A_SDK_ROOT}/cmdline-tools/cmdline-tools" "${P4A_SDK_ROOT}/cmdline-tools/latest"
           echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
-        env:
-          P4A_SDK_ROOT: ${{ env.P4A_SDK_ROOT }}
+          # 🧩 СОВМЕСТИМОСТЬ со старым путём Buildozer: создаём tools/bin и симлинк sdkmanager
+          mkdir -p "${P4A_SDK_ROOT}/tools/bin"
+          ln -sf "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "${P4A_SDK_ROOT}/tools/bin/sdkmanager"
 
-      - name: Accept licenses & install stable SDK packages into Buildozer SDK root
+      - name: Accept licenses & install stable SDK packages (34.0.0)
         run: |
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" --list > /dev/null || true
-          yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-        env:
-          P4A_SDK_ROOT: ${{ env.P4A_SDK_ROOT }}
+          yes | "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          # На всякий случай покажем список
+          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --list | head -n 50 || true
 
       - name: Decode keystore (from GitHub Secret)
         run: |
           echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
 
       - name: Build release APK with Buildozer
-        env:
-          ANDROID_SDK_ROOT: ${{ env.P4A_SDK_ROOT }}
-          ANDROID_HOME: ${{ env.P4A_SDK_ROOT }}
         run: |
           buildozer -v android release
 
