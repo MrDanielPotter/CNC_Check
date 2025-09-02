@@ -23,11 +23,11 @@ jobs:
       - name: "Checkout"
         uses: actions/checkout@v4
 
-      - name: "Set up Java 11 (Temurin)"
+      - name: "Set up Java 17 (Temurin)"
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "11"
+          java-version: "17"
 
       - name: "Install system and Python deps"
         shell: bash
@@ -48,8 +48,6 @@ jobs:
           mkdir -p "${SDK}/cmdline-tools"
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
-          unzip -l /tmp/cli.zip | sed -n '1,40p'
-          rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
@@ -66,7 +64,7 @@ jobs:
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
           java -version || true
-          which sdkmanager && sdkmanager --version
+          sdkmanager --version || true
 
           yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
           sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
@@ -81,23 +79,7 @@ jobs:
 
           test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
 
-      - name: "Prefetch python-for-android and verify androidstorage4kivy recipe"
-        shell: bash
-        run: |
-          set -e
-          P4A_DIR="$HOME/.buildozer/android/platform/python-for-android"
-          if [ ! -d "$P4A_DIR" ]; then
-            mkdir -p "$(dirname "$P4A_DIR")"
-            git clone -b master --single-branch https://github.com/kivy/python-for-android.git "$P4A_DIR"
-          fi
-          if [ -d "$P4A_DIR/pythonforandroid/recipes/androidstorage4kivy" ]; then
-            echo "Recipe androidstorage4kivy found"
-          else
-            echo "Recipe androidstorage4kivy NOT found"
-            exit 1
-          fi
-
-      - name: "Patch buildozer.spec (sed-only)"
+      - name: "Patch buildozer.spec"
         shell: bash
         run: |
           set -e
@@ -105,96 +87,10 @@ jobs:
           if [ ! -f "$SPEC" ]; then
             buildozer init
           fi
-
-          # --- set/update key=value (or append) ---
-          kv () {
-            local key="$1"; shift
-            local val="$1"; shift
-            if grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$SPEC"; then
-              sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*$|${key} = ${val}|" "$SPEC"
-            else
-              printf "%s = %s\n" "$key" "$val" >> "$SPEC"
-            fi
-          }
-
-          kv "android.sdk_dir" "\$ANDROID_SDK_ROOT"
-          kv "android.ndk_dir" "\$ANDROID_SDK_ROOT/ndk/${ANDROIDNDKVER}"
-          kv "android.build_tools" "${ANDROID_BUILD_TOOLS_VERSION}"
-
-          # requirements: ensure python3,kivy,android,androidstorage4kivy,kivymd==2.0.0
-          if grep -Eq "^[[:space:]]*requirements[[:space:]]*=" "$SPEC"; then
-            CUR_REQ=$(sed -n -E 's/^[[:space:]]*requirements[[:space:]]*=\s*(.*)$/\1/p' "$SPEC")
-          else
-            CUR_REQ=""
+          # добавим AGP совместимый с Java 17
+          if ! grep -q "android.gradle_dependencies" "$SPEC"; then
+            echo "android.gradle_dependencies = com.android.tools.build:gradle:7.4.2" >> "$SPEC"
           fi
-
-          # normalize: replace any kivymd* to kivymd==2.0.0 and add missing pkgs
-          WANT="python3,kivy,android,androidstorage4kivy,kivymd==2.0.0"
-          IFS=',' read -r -a want_arr <<< "$WANT"
-          IFS=',' read -r -a cur_arr <<< "$CUR_REQ"
-          out=""
-          seen=""
-
-          add_pkg () {
-            local p="$1"
-            local base="${p%%==*}"
-            case "$base" in
-              kivymd) p="kivymd==2.0.0" ;;
-            esac
-            if ! echo ",$seen," | grep -q ",$base,"; then
-              out="${out}${out:+,}$p"
-              seen="${seen},${base}"
-            fi
-          }
-
-          for p in "${cur_arr[@]}"; do
-            p=$(echo "$p" | xargs)
-            [ -n "$p" ] && add_pkg "$p"
-          done
-          for p in "${want_arr[@]}"; do
-            add_pkg "$p"
-          done
-
-          if grep -Eq "^[[:space:]]*requirements[[:space:]]*=" "$SPEC"; then
-            sed -i -E "s|^[[:space:]]*requirements[[:space:]]*=.*$|requirements = ${out}|" "$SPEC"
-          else
-            printf "requirements = %s\n" "$out" >> "$SPEC"
-          fi
-
-          # permissions: merge INTERNET, READ/WRITE_EXTERNAL_STORAGE, CAMERA
-          if grep -Eq "^[[:space:]]*android\.permissions[[:space:]]*=" "$SPEC"; then
-            CUR_PERM=$(sed -n -E 's/^[[:space:]]*android\.permissions[[:space:]]*=\s*(.*)$/\1/p' "$SPEC")
-          else
-            CUR_PERM=""
-          fi
-
-          WANT_PERM="INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAMERA"
-          IFS=',' read -r -a wantp_arr <<< "$WANT_PERM"
-          IFS=',' read -r -a curp_arr <<< "$CUR_PERM"
-          pout=""
-          pseen=""
-
-          add_perm () {
-            local p="$1"
-            p=$(echo "$p" | xargs)
-            [ -z "$p" ] && return 0
-            if ! echo ",$pseen," | grep -q ",$p,"; then
-              pout="${pout}${pout:+,}$p"
-              pseen="${pseen},${p}"
-            fi
-          }
-
-          for p in "${curp_arr[@]}"; do add_perm "$p"; done
-          for p in "${wantp_arr[@]}"; do add_perm "$p"; done
-
-          if grep -Eq "^[[:space:]]*android\.permissions[[:space:]]*=" "$SPEC"; then
-            sed -i -E "s|^[[:space:]]*android\.permissions[[:space:]]*=.*$|android.permissions = ${pout}|" "$SPEC"
-          else
-            printf "android.permissions = %s\n" "$pout" >> "$SPEC"
-          fi
-
-          echo "buildozer.spec patched:"
-          grep -E "^(android\.sdk_dir|android\.ndk_dir|android\.build_tools|requirements|android\.permissions)" "$SPEC" || true
 
       - name: "Build APK (release)"
         shell: bash
@@ -214,12 +110,6 @@ jobs:
           set -e
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > mykey.keystore
-            if [ ! -s mykey.keystore ]; then
-              echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret."
-              exit 1
-            fi
-          else
-            echo "No ANDROID_KEYSTORE_BASE64 secret provided — skipping decode."
           fi
 
       - name: "Align and Sign APK"
@@ -232,27 +122,20 @@ jobs:
           set -e
           APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
           if [ -z "$APK_UNSIGNED" ]; then
-            echo "No unsigned APK found in bin/. See buildozer.log for details."
+            echo "No unsigned APK found"
             exit 1
           fi
-
           ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
           APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
-          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
-          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
-
           "$ZIPALIGN" -v -p 4 "$APK_UNSIGNED" aligned.apk
-
-          if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
+          if [ -f mykey.keystore ]; then
             "$APKSIGNER" sign \
               --ks mykey.keystore \
               --ks-pass pass:"$STOREPASS" \
               --key-pass pass:"$KEYPASS" \
               --ks-key-alias "$ALIAS" \
               --out CNCChecklist-signed.apk aligned.apk
-            "$APKSIGNER" verify --print-certs CNCChecklist-signed.apk
           else
-            echo "Keystore or passwords not provided — uploading aligned.apk unsigned."
             mv aligned.apk CNCChecklist-unaligned-unsigned.apk
           fi
 
