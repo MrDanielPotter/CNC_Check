@@ -48,7 +48,7 @@ jobs:
 
           mkdir -p "${SDK}/cmdline-tools"
 
-          # Commandline-tools (совместимы с Java 17)
+          # Commandline-tools (Java 17 совместимые)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
@@ -62,7 +62,7 @@ jobs:
           rm -rf "${SDK}/tools"
           ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
 
-          # В PATH
+          # PATH
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
@@ -112,7 +112,7 @@ jobs:
           ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-${ANDROIDNDKVER}"
           # alias под имя, которое p4a любит (android-ndk-r25b), чтобы не качал снова
           ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-r25b"
-          # экспорт на всякий
+          # переменные для p4a
           echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
@@ -129,13 +129,28 @@ jobs:
             ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
           fi
 
-          echo "SDK structure before build (top 120 lines):"
+          echo "======= ENV (ANDROID/P4A/JAVA/GRADLE) ======="
+          env | sort | grep -E 'ANDROID|P4A|JAVA|GRADLE' || true
+          echo "======= SDK structure (top 120 lines) ======="
           ls -R "$ANDROID_SDK_ROOT" | head -n 120 || true
 
           rm -f buildozer.log
-          buildozer android release
+          echo ">>> START buildozer android release"
+          buildozer android release || (echo "Buildozer failed, dumping buildozer.log (if any):" && if [ -f buildozer.log ]; then cat buildozer.log; else echo 'buildozer.log not found'; fi; exit 1)
+
+      - name: "Show buildozer log tail"
+        if: always()
+        shell: bash
+        run: |
+          if [ -f buildozer.log ]; then
+            echo "===== LAST 300 lines of buildozer.log ====="
+            tail -n 300 buildozer.log
+          else
+            echo "No buildozer.log was generated."
+          fi
 
       - name: "Decode keystore (from GitHub Secret)"
+        if: always()
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -152,6 +167,7 @@ jobs:
           fi
 
       - name: "Align and Sign APK"
+        if: always()
         shell: bash
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -159,10 +175,10 @@ jobs:
           ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
           set -e
-          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
+          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk 2>/dev/null | head -n 1 || true)
           if [ -z "$APK_UNSIGNED" ]; then
-            echo "No unsigned APK found in bin/. See buildozer.log for details."
-            exit 1
+            echo "No unsigned APK found in bin/ — skipping sign."
+            exit 0
           fi
 
           ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
@@ -186,6 +202,7 @@ jobs:
           fi
 
       - name: "Upload APK artifact"
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CNCChecklist-release
@@ -195,6 +212,7 @@ jobs:
           if-no-files-found: warn
 
       - name: "Upload buildozer log"
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: buildozer-log
