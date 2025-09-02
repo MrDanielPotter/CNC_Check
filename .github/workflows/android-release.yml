@@ -40,21 +40,32 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
-      - name: "Fetch Android Commandline Tools and layout"
+      - name: "Fetch Android Commandline Tools and layout (with tools symlink)"
         shell: bash
         run: |
           set -e
           SDK="${P4A_SDK_ROOT}"
+
+          # Чистая раскладка SDK
+          mkdir -p "${SDK}"
           mkdir -p "${SDK}/cmdline-tools"
+
+          # Скачиваем актуальные командные инструменты (совместимы с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
+          rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
+
+          # Укладываем как .../cmdline-tools/latest/...
+          rm -rf "${SDK}/cmdline-tools/latest"
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-          # симлинк для совместимости
+
+          # ВАЖНО: создаём каталог tools и симлинк на latest для обратной совместимости с Buildozer/p4a
           rm -rf "${SDK}/tools"
-          mkdir -p "${SDK}/tools/bin"
-          ln -sf "${SDK}/cmdline-tools/latest/bin/sdkmanager" "${SDK}/tools/bin/sdkmanager"
+          ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
+
+          # Добавляем инструменты в PATH
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
@@ -75,6 +86,11 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
+          # Контрольная проверка наличия ключевых каталожных узлов
+          test -d "${P4A_SDK_ROOT}/platforms/android-${ANDROIDAPI}"
+          test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
+          test -d "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
+
       - name: "Build APK (release)"
         shell: bash
         run: |
@@ -83,7 +99,12 @@ jobs:
           export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
-          echo "SDK structure before build:"
+          # Повторим симлинк tools -> cmdline-tools/latest на случай очисток
+          if [ ! -e "${ANDROID_SDK_ROOT}/tools" ]; then
+            ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
+          fi
+
+          echo "SDK structure before build (top 100 lines):"
           ls -R "$ANDROID_SDK_ROOT" | head -n 100 || true
 
           rm -f buildozer.log
@@ -97,6 +118,12 @@ jobs:
           set -e
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > mykey.keystore
+            if [ ! -s mykey.keystore ]; then
+              echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret."
+              exit 1
+            fi
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 provided — skipping decode."
           fi
 
       - name: "Align and Sign APK"
@@ -109,20 +136,27 @@ jobs:
           set -e
           APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
           if [ -z "$APK_UNSIGNED" ]; then
-            echo "No unsigned APK found"
+            echo "No unsigned APK found in bin/. See buildozer.log for details."
             exit 1
           fi
+
           ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
           APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
+          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
+          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
+
           "$ZIPALIGN" -v -p 4 "$APK_UNSIGNED" aligned.apk
-          if [ -f mykey.keystore ]; then
+
+          if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
             "$APKSIGNER" sign \
               --ks mykey.keystore \
               --ks-pass pass:"$STOREPASS" \
               --key-pass pass:"$KEYPASS" \
               --ks-key-alias "$ALIAS" \
               --out CNCChecklist-signed.apk aligned.apk
+            "$APKSIGNER" verify --print-certs CNCChecklist-signed.apk
           else
+            echo "Keystore or passwords not provided — uploading aligned.apk unsigned."
             mv aligned.apk CNCChecklist-unaligned-unsigned.apk
           fi
 
