@@ -10,31 +10,32 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # SDK/NDK — туда, где их ожидают buildozer/p4a
+      # Пути SDK/NDK — там их ожидают buildozer/p4a
       P4A_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
       ANDROID_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
       ANDROID_HOME: $HOME/.buildozer/android/platform/android-sdk
 
-      # Цели
+      # Цели Android
       ANDROIDAPI: "34"
       ANDROIDMINAPI: "26"
       ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
 
-      # NDK r25b (side-by-side)
+      # NDK r25b (side-by-side id)
       ANDROIDNDKVER: "25.1.8937393"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (Temurin)
+      - name: Set up Java 11 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "11"
 
       - name: Install system deps and Python tools
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             git zip unzip wget curl build-essential ccache \
@@ -43,29 +44,37 @@ jobs:
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
       # ---------- SDK CLI ----------
-      - name: Install Android SDK Command-line Tools (latest)
+      - name: Install Android SDK Command-line Tools (with lib/)
         run: |
           set -e
           SDK="${P4A_SDK_ROOT}"
           mkdir -p "${SDK}/cmdline-tools"
-          # Скачиваем свежие CLI (номер билда может обновляться — этот актуален)
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cli.zip
 
-          # Важно распаковать так, чтобы был latest/{bin,lib}
+          # Стабильный архив, содержащий bin/ и lib/ (sdkmanager.jar и др.)
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip -O /tmp/cli.zip
+
           rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
-          # Архив даёт папку cmdline-tools/ с bin+lib внутри
+
+          # Разворачиваем как .../cmdline-tools/latest/{bin,lib}
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
 
-          # На всякий случай права на исполняемые
+          # Проверка наличия lib/sdkmanager.jar (жёсткое требование)
+          if [ ! -f "${SDK}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
+            echo "ERROR: ${SDK}/cmdline-tools/latest/lib/sdkmanager.jar not found"
+            ls -la "${SDK}/cmdline-tools/latest" || true
+            ls -la "${SDK}/cmdline-tools/latest/lib" || true
+            exit 1
+          fi
+
           chmod +x "${SDK}/cmdline-tools/latest/bin/"* || true
 
-          # Совместимость со старым путём tools/bin (некоторые скрипты p4a смотрят туда)
+          # Совместимость со старым путём tools/bin
           mkdir -p "${SDK}/tools/bin"
           ln -sf "${SDK}/cmdline-tools/latest/bin/sdkmanager" "${SDK}/tools/bin/sdkmanager"
 
-          # PATH как fallback (далее всё равно абсолютные пути)
+          # PATH (как fallback)
           echo "${SDK}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${SDK}/platform-tools" >> $GITHUB_PATH
 
@@ -79,30 +88,50 @@ jobs:
         run: |
           set -e
           SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          echo "sdkmanager path: $SM"
-          "$SM" --version || true
+          SDK_LIB="${P4A_SDK_ROOT}/cmdline-tools/latest/lib"
 
-          # Лицензии
+          echo "==== Java diagnostics ===="
+          echo "JAVA_HOME=${JAVA_HOME}"
+          java -version
+          echo
+          echo "==== sdkmanager diagnostics ===="
+          echo "sdkmanager bin: $SM"
+          "$SM" --version || true
+          echo
+          echo "==== classpath check ===="
+          echo "Expecting jars in: ${SDK_LIB}"
+          ls -1 "${SDK_LIB}" | sed 's/^/  - /'
+          # Пытаемся вызвать класс напрямую (не критично, только лог)
+          echo
+          echo "Try: java -cp \"${SDK_LIB}/*\" com.android.sdklib.tool.sdkmanager.SdkManagerCli --version"
+          ( java -cp "${SDK_LIB}/*" com.android.sdklib.tool.sdkmanager.SdkManagerCli --version ) || echo "Direct class call failed (ok, using sdkmanager wrapper)"
+
+          echo
+          echo "==== Accept licenses ===="
           yes | "$SM" --sdk_root="${P4A_SDK_ROOT}" --licenses || true
 
-          # Базовые стабильные пакеты
+          echo
+          echo "==== Install stable packages ===="
           "$SM" --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          # Анти-preview: если p4a попросит 36.1.0-rc1 — подсовываем ссылку на 34.0.0
-          if [ ! -d "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1" ]; then
-            ln -s "${P4A_SDK_ROOT}/build-tools/34.0.0" "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1"
-          fi
-
-          echo "Build-tools installed:"
+          echo
+          echo "==== Verify build-tools & aidl ===="
           ls -la "${P4A_SDK_ROOT}/build-tools" || true
+          if [ ! -x "${P4A_SDK_ROOT}/build-tools/34.0.0/aidl" ]; then
+            echo "ERROR: aidl not found at ${P4A_SDK_ROOT}/build-tools/34.0.0/aidl"
+            exit 1
+          fi
+          "${P4A_SDK_ROOT}/build-tools/34.0.0/aidl" --version || true
 
+          echo
+          echo "==== sdkmanager --list (head) ===="
           "$SM" --sdk_root="${P4A_SDK_ROOT}" --list | head -n 80 || true
 
       # ---------- NDK ----------
-      - name: Install Android NDK r25b (side-by-side)
+      - name: Install Android NDK r25b (side-by-side) and verify
         run: |
           set -e
           SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
@@ -112,25 +141,28 @@ jobs:
           echo "ANDROID_NDK_HOME=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
           echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
 
+          echo "==== NDK layout ===="
           ls -la "${P4A_SDK_ROOT}/ndk" || true
           ls -la "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" || true
 
-      # ---------- aidl check ----------
-      - name: Verify AIDL presence and version
-        run: |
-          set -e
-          AIDL_BIN="${P4A_SDK_ROOT}/build-tools/34.0.0/aidl"
-          if [ ! -x "$AIDL_BIN" ]; then
-            echo "ERROR: aidl not found at $AIDL_BIN"
-            ls -la "${P4A_SDK_ROOT}/build-tools/34.0.0" || true
+          echo "==== Verify ndk-build and toolchain ===="
+          if [ ! -x "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/ndk-build" ]; then
+            echo "ERROR: ndk-build not found"
             exit 1
           fi
-          echo "aidl found at: $AIDL_BIN"
-          "$AIDL_BIN" --version || (echo "aidl exists but failed to run" && exit 1)
+          "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/ndk-build" -version || true
+
+          CLANG="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          if [ ! -x "$CLANG" ]; then
+            echo "ERROR: clang not found in llvm toolchain"
+            exit 1
+          fi
+          "$CLANG" --version | head -n 1
 
       # ---------- Keystore ----------
       - name: Decode keystore (from GitHub Secret)
         run: |
+          set -e
           echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
           test -s mykey.keystore || (echo "Keystore is empty. Check KEYSTORE_FILE secret." && exit 1)
 
@@ -149,7 +181,6 @@ jobs:
           echo "ANDROIDNDK=$ANDROIDNDK"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           buildozer --version
-          # сохраняем лог сборки
           buildozer -v android release | tee buildozer.log
 
       # ---------- Sign ----------
