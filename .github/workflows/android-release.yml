@@ -28,7 +28,7 @@ jobs:
           distribution: temurin
           java-version: "11"
 
-      - name: Install system & Python deps
+      - name: Install system and Python deps
         shell: bash
         run: |
           set -e
@@ -61,7 +61,7 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Accept SDK licenses & install SDK/NDK
+      - name: Accept SDK licenses and install SDK/NDK
         shell: bash
         run: |
           set -e
@@ -80,12 +80,12 @@ jobs:
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-          # Удалим возможные превью build-tools 36*
+          # Remove any preview build-tools 36*
           if [ -d "${P4A_SDK_ROOT}/build-tools" ]; then
             find "${P4A_SDK_ROOT}/build-tools" -maxdepth 1 -type d -name "36*" -print -exec rm -rf {} \; || true
           fi
 
-          # Проверим aidl
+          # Verify aidl
           test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
 
       - name: Prefetch python-for-android and verify androidstorage4kivy recipe
@@ -118,7 +118,6 @@ spec_path = "buildozer.spec"
 txt = io.open(spec_path, "r", encoding="utf-8").read()
 
 def set_kv(txt, key, value):
-    import re
     pat = re.compile(rf'^\s*{re.escape(key)}\s*=.*$', re.M)
     line = f"{key} = {value}"
     return pat.sub(line, txt) if pat.search(txt) else txt + ("\n" if not txt.endswith("\n") else "") + line + "\n"
@@ -129,4 +128,100 @@ txt = set_kv(txt, "android.build_tools", os.environ.get("ANDROID_BUILD_TOOLS_VER
 
 req_line = "requirements = python3,kivy,android,androidstorage4kivy,kivymd==2.0.0"
 if re.search(r'^\s*requirements\s*=.*$', txt, re.M):
-    # мягкая п
+    cur = re.search(r'^\s*requirements\s*=\s*(.*)$', txt, re.M).group(1)
+    parts = [p.strip() for p in cur.split(",") if p.strip()]
+    want = ["python3","kivy","android","androidstorage4kivy","kivymd==2.0.0"]
+    out, seen = [], set()
+    for p in parts + want:
+        base = p.split("==")[0]
+        if base == "kivymd":
+            p = "kivymd==2.0.0"
+        if base not in seen:
+            out.append(p); seen.add(base)
+    txt = re.sub(r'^\s*requirements\s*=.*$', "requirements = " + ",".join(out), txt, flags=re.M)
+else:
+    txt += ("\n" if not txt.endswith("\n") else "") + req_line + "\n"
+
+permpat = re.compile(r'^\s*android\.permissions\s*=\s*(.*)$', re.M)
+def merge_perms(s):
+    perms = set([p.strip() for p in s.split(",") if p.strip()])
+    perms.update({"WRITE_EXTERNAL_STORAGE","READ_EXTERNAL_STORAGE","INTERNET","CAMERA"})
+    return "android.permissions = " + ",".join(sorted(perms))
+if permpat.search(txt):
+    cur = permpat.search(txt).group(1)
+    txt = permpat.sub(merge_perms(cur), txt)
+else:
+    txt += "android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAMERA\n"
+
+io.open(spec_path, "w", encoding="utf-8").write(txt)
+print("Patched buildozer.spec")
+PY
+
+      - name: Build APK (release)
+        shell: bash
+        run: |
+          set -e
+          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
+          export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
+          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
+          rm -f buildozer.log
+          buildozer android release
+
+      - name: Decode keystore (from GitHub Secret)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          set -e
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > mykey.keystore
+          test -s mykey.keystore || (echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret." && exit 1)
+
+      - name: Align and Sign APK (zipalign/apksigner)
+        shell: bash
+        env:
+          STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYPASS: ${{ secrets.KEY_PASSWORD }}
+          ALIAS:    ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
+          if [ -z "$APK_UNSIGNED" ]; then
+            echo "No unsigned APK found in bin/. See buildozer.log for details."
+            exit 1
+          fi
+
+          ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
+          APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
+          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
+          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
+
+          "$ZIPALIGN" -v -p 4 "$APK_UNSIGNED" aligned.apk
+
+          if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
+            "$APKSIGNER" sign \
+              --ks mykey.keystore \
+              --ks-pass pass:"$STOREPASS" \
+              --key-pass pass:"$KEYPASS" \
+              --ks-key-alias "$ALIAS" \
+              --out CNCChecklist-signed.apk aligned.apk
+            "$APKSIGNER" verify --print-certs CNCChecklist-signed.apk
+          else
+            echo "Keystore or passwords not provided — uploading aligned.apk unsigned."
+            mv aligned.apk CNCChecklist-unaligned-unsigned.apk
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CNCChecklist-release
+          path: |
+            CNCChecklist-signed.apk
+            CNCChecklist-unaligned-unsigned.apk
+          if-no-files-found: warn
+
+      - name: Upload buildozer log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildozer-log
+          path: buildozer.log
+          if-no-files-found: warn
