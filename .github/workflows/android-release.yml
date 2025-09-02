@@ -70,16 +70,16 @@ jobs:
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
-            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
-            '  <localPackage path="tools" obsolete="false">' \
-            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
-            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
-            '    <display-name>Android SDK Tools 2</display-name>' \
-            '  </localPackage>' \
-            '</sdk:sdk-repository>' \
-            > "${SDK}/tools/package.xml"
+          cat > "${SDK}/tools/package.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
+  <localPackage path="tools" obsolete="false">
+    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>
+    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>
+    <display-name>Android SDK Tools 2</display-name>
+  </localPackage>
+</sdk:sdk-repository>
+XML
 
       - name: "Accept licenses & install core SDK/NDK"
         shell: bash
@@ -129,9 +129,11 @@ jobs:
           # p4a реально сканирует дом. путь: ~/.buildozer/android/platform/android-sdk
           export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
           export ANDROID_NDK_HOME="$HOME/.buildozer/android/platform/android-ndk-r25b"
+          export ANDROIDAPI=34
+          export ANDROIDMINAPI=26
           export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
 
-          # Зеркалим подготовленный SDK в домашний SDK p4a (устойчиво против перетирания симлинков)
+          # Зеркалим подготовленный SDK в домашний SDK p4a
           SRC="${{ github.workspace }}/.buildozer/android/platform/android-sdk"
           DST="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$DST/platforms" "$DST/build-tools" "$DST/ndk" "$DST/cmdline-tools" "$DST/platform-tools"
@@ -142,33 +144,35 @@ jobs:
           rsync -a          "$SRC/cmdline-tools/"  "$DST/cmdline-tools/"
           rsync -a          "$SRC/platform-tools/" "$DST/platform-tools/" || true
 
-          # Маркеры и совместимость каталога tools/
+          # Маркеры, tools/, и sdkmanager в tools/bin (p4a любит этот путь)
           ln -sfn "$DST/cmdline-tools/latest" "$DST/tools"
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/source.properties"
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/tools/source.properties"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
-            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
-            '  <localPackage path="tools" obsolete="false">' \
-            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
-            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
-            '    <display-name>Android SDK Tools 2</display-name>' \
-            '  </localPackage>' \
-            '</sdk:sdk-repository>' \
-            > "$DST/tools/package.xml"
-
-          # Хак для p4a: нужен sdkmanager именно в tools/bin/, но только если его нет
+          mkdir -p "$DST/tools/bin"
           if [ ! -e "$DST/tools/bin/sdkmanager" ]; then
-            mkdir -p "$DST/tools/bin"
             ln -sfn "$DST/cmdline-tools/latest/bin/sdkmanager" "$DST/tools/bin/sdkmanager"
           fi
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/source.properties"
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/tools/source.properties"
+          cat > "$DST/tools/package.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">
+  <localPackage path="tools" obsolete="false">
+    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>
+    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>
+    <display-name>Android SDK Tools 2</display-name>
+  </localPackage>
+</sdk:sdk-repository>
+XML
 
           echo "======= SDK paths p4a will scan ======="
           ls -la "$DST/platforms" || true
           ls -l  "$DST/platforms/android-34/android.jar" || true
 
-          echo "======= ENV (ANDROID/P4A/JAVA/GRADLE) ======="
-          env | sort | grep -E 'ANDROID|P4A|JAVA|GRADLE' || true
+          # ВАЖНО: насильно передаём пути SDK/NDK самому p4a
+          export ANDROIDSDK="$ANDROID_SDK_ROOT"
+          export P4A_CMDLINE_ARGS="--sdk-dir=$ANDROID_SDK_ROOT --ndk-dir=$ANDROID_NDK_HOME --android-api=$ANDROIDAPI --ndk-api=$ANDROIDMINAPI"
+
+          echo "======= ENV (ANDROID*/P4A*) ======="
+          env | sort | grep -E 'ANDROID(SDK|_SDK|API|NDK)|P4A' || true
 
           rm -f buildozer.log
           echo ">>> START buildozer android release (tee logging)"
@@ -182,7 +186,7 @@ jobs:
           if [ -f buildozer.log ]; then
             echo "===== LAST 300 lines of buildozer.log ====="
             tail -n 300 buildozer.log
-          else
+          else:
             echo "No buildozer.log was generated."
           fi
 
