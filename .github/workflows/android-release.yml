@@ -10,106 +10,110 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # ВАЖНО: используем SDK-root ровно в $HOME, куда смотрит buildozer/p4a
-      P4A_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
-      ANDROID_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
-      ANDROID_HOME: $HOME/.buildozer/android/platform/android-sdk
-      # Явно подсказуем p4a версии
-      ANDROIDAPI: "34"
-      ANDROIDMINAPI: "26"
-      ANDROIDNDKVER: "r25b"
-      ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
+      # Пути SDK/NDK для p4a/buildozer
+      P4A_SDK_ROOT: ${{ github.workspace }}/.p4a/sdk
+      P4A_NDK_DIR:  ${{ github.workspace }}/.p4a/ndk
+      ANDROIDSDK:   ${{ github.workspace }}/.p4a/sdk
+      ANDROIDNDK:   ${{ github.workspace }}/.p4a/ndk
+      ANDROID_NDK_HOME: ${{ github.workspace }}/.p4a/ndk
+      # Фиксируем стабильную версию build-tools
+      P4A_BUILD_TOOLS_VERSION: "34.0.0"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v3
+      - name: Set up Java 17 (Temurin)
+        uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: "temurin"
           java-version: "17"
 
-      - name: Install system deps & Python tools
+      - name: Install system deps and Python tools
         run: |
-          sudo apt update
-          sudo apt install -y git zip unzip wget build-essential ccache libffi-dev libssl-dev libsqlite3-dev zlib1g-dev
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip wget curl build-essential ccache \
+            libffi-dev libssl-dev libsqlite3-dev zlib1g-dev
           python3 -m pip install --upgrade pip
-          python3 -m pip install buildozer cython
+          # Фиксируем рабочую версию buildozer и cython
+          python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
-      # 1) Ставим cmdline-tools прямо в $HOME/.buildozer/...
-      - name: Install Android SDK command-line tools into Buildozer SDK root
+      - name: Prepare Android SDK folders
+        run: |
+          mkdir -p "${P4A_SDK_ROOT}"
+          mkdir -p "${P4A_NDK_DIR}"
+
+      - name: Install Android SDK Command-line Tools (latest)
         run: |
           mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O /tmp/cli-tools.zip
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cli-tools.zip
           unzip -q /tmp/cli-tools.zip -d "${P4A_SDK_ROOT}/cmdline-tools"
           mv "${P4A_SDK_ROOT}/cmdline-tools/cmdline-tools" "${P4A_SDK_ROOT}/cmdline-tools/latest"
-
-          # Добавляем sdkmanager и platform-tools в PATH
           echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
 
-          # Совместимость со старым путём, куда исторически смотрит buildozer:
-          mkdir -p "${P4A_SDK_ROOT}/tools/bin"
-          ln -sf "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "${P4A_SDK_ROOT}/tools/bin/sdkmanager"
-
-      # 2) Принимаем лицензии и ставим стабильные пакеты (34.0.0) в тот же SDK-root
-      - name: Accept licenses & install stable SDK packages
+      - name: Accept Android SDK licenses & install stable packages
+        shell: bash
         run: |
-          yes | "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" --licenses || true
-          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" \
-            "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --sdk_root="${P4A_SDK_ROOT}" --list > /dev/null || true
+          yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
 
-          # Хак совместимости: если p4a вдруг попросит preview 36.1-rc1, подсовываем ссылку на 34.0.0
-          if [ ! -d "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1" ]; then
-            ln -s "${P4A_SDK_ROOT}/build-tools/34.0.0" "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1"
-          fi
+          # СТАБИЛЬНЫЕ пакеты (без preview), достаточные для p4a/buildozer
+          sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
-          # Диагностика
-          ls -la "${P4A_SDK_ROOT}/build-tools" || true
-          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" --list | head -n 60 || true
+          # Проверим, что apksigner/zipalign появились
+          ls -la "${P4A_SDK_ROOT}/build-tools/34.0.0" || (echo "Build-tools not found" && exit 1)
 
-      # 3) Кейсстор из секретов (обязательно заранее добавьте KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD)
-      - name: Decode keystore (from GitHub Secret)
+      - name: Decode keystore from GitHub Secret
         run: |
           echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
+          test -s mykey.keystore || (echo "Keystore is empty. Check KEYSTORE_FILE secret." && exit 1)
 
-      # 4) Сборка release
-      - name: Build release APK with Buildozer
+      - name: Build release with Buildozer
+        env:
+          # передаём p4a параметры через переменные окружения
+          P4A_release: 1
         run: |
+          # Накладываем переменные окружения, чтобы p4a использовал наш SDK/NDK
+          export ANDROIDSDK="${P4A_SDK_ROOT}"
+          export ANDROIDNDK="${P4A_NDK_DIR}"
+          export ANDROID_NDK_HOME="${P4A_NDK_DIR}"
+          export P4A_SDK_ROOT="${P4A_SDK_ROOT}"
+          export P4A_NDK_DIR="${P4A_NDK_DIR}"
+          export P4A_BUILD_TOOLS_VERSION="34.0.0"
+
+          # buildozer сам скачает рекомендованный NDK (25b) в ~/.buildozer,
+          # но SDK уже готов и с лицензиями.
           buildozer -v android release
 
-      # 5) Подпись jarsigner
-      - name: Sign APK with jarsigner
+      - name: Sign APK (apksigner)
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEYPASS: ${{ secrets.KEY_PASSWORD }}
-          ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYPASS:   ${{ secrets.KEY_PASSWORD }}
+          ALIAS:     ${{ secrets.KEY_ALIAS }}
         run: |
-          jarsigner -verbose \
-            -keystore mykey.keystore \
-            -storepass "$STOREPASS" \
-            -keypass "$KEYPASS" \
-            bin/*-release-unsigned.apk "$ALIAS"
-
-      # 6) zipalign + apksigner
-      - name: Align and re-sign with apksigner
-        env:
-          STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEYPASS: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          sudo apt install -y zipalign apksigner
           set -e
-          APK_IN=$(ls bin/*-release-unsigned.apk | head -n1)
-          zipalign -v 4 "$APK_IN" aligned.apk
-          apksigner sign \
-            --ks mykey.keystore \
+          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1)
+          test -f "$APK_UNSIGNED" || (echo "Unsigned APK not found" && exit 1)
+
+          ZIPALIGN="${P4A_SDK_ROOT}/build-tools/34.0.0/zipalign"
+          APKSIGNER="${P4A_SDK_ROOT}/build-tools/34.0.0/apksigner"
+          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
+          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
+
+          $ZIPALIGN -v -p 4 "$APK_UNSIGNED" aligned.apk
+          $APKSIGNER sign --ks mykey.keystore \
             --ks-pass pass:"$STOREPASS" \
             --key-pass pass:"$KEYPASS" \
+            --ks-key-alias "$ALIAS" \
             --out CNCChecklist-signed.apk aligned.apk
-          apksigner verify --print-certs CNCChecklist-signed.apk
 
-      # 7) Артефакт
+          $APKSIGNER verify --print-certs CNCChecklist-signed.apk
+
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
