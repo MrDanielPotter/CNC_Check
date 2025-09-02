@@ -2,7 +2,8 @@ name: Build Android Release APK
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -172,13 +173,19 @@ PY
           rm -f buildozer.log
           buildozer android release
 
-      - name: "Decode keystore from GitHub Secret"
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      - name: "Decode keystore (from GitHub Secret)"
         shell: bash
         run: |
           set -e
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > mykey.keystore
-          test -s mykey.keystore || (echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret." && exit 1)
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > mykey.keystore
+            if [ ! -s mykey.keystore ]; then
+              echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret."
+              exit 1
+            fi
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret provided — skipping decode."
+          fi
 
       - name: "Align and Sign APK"
         shell: bash
@@ -224,7 +231,6 @@ PY
           if-no-files-found: warn
 
       - name: "Upload buildozer log"
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: buildozer-log
