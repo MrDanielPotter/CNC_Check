@@ -157,6 +157,10 @@ jobs:
             '</sdk:sdk-repository>' \
             > "$DST/tools/package.xml"
 
+          # Хак для p4a: нужен sdkmanager именно в tools/bin/
+          mkdir -p "$DST/tools/bin"
+          ln -sfn "$DST/cmdline-tools/latest/bin/sdkmanager" "$DST/tools/bin/sdkmanager"
+
           echo "======= SDK paths p4a will scan ======="
           ls -la "$DST/platforms" || true
           ls -l  "$DST/platforms/android-34/android.jar" || true
