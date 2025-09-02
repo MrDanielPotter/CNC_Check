@@ -48,7 +48,7 @@ jobs:
 
           mkdir -p "${SDK}/cmdline-tools"
 
-          # Commandline-tools (Java 17 совместимые)
+          # Актуальные commandline-tools (совм. с Java 17)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
           wget -q "${URL}" -O /tmp/cli.zip
           rm -rf /tmp/cmdline-tools
@@ -66,7 +66,7 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-          # Маркеры пакета tools, чтобы p4a считал SDK валидным
+          # Маркеры пакета tools (p4a любит их видеть)
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
@@ -81,27 +81,38 @@ jobs:
             '</sdk:sdk-repository>' \
             > "${SDK}/tools/package.xml"
 
-      - name: "Accept SDK licenses and install SDK/NDK"
+      - name: "Accept licenses & install core SDK/NDK"
         shell: bash
         run: |
           set -e
           export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
-          java -version || true
-          sdkmanager --version || true
-
           yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
           sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" \
-            "platforms;android-${ANDROIDAPI}" \
             "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
             "ndk;${ANDROIDNDKVER}"
 
-          # Контроль
-          test -d "${P4A_SDK_ROOT}/platforms/android-${ANDROIDAPI}"
-          test -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
-          test -d "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
+      - name: "Ensure Android platform 34 is installed (retry)"
+        shell: bash
+        run: |
+          set -e
+          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
+          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+
+          # доустанавливаем платформу с 3 попытками (сетевые флаппы)
+          for i in 1 2 3; do
+            echo ">>> Install attempt $i: platforms;android-34"
+            yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" "platforms;android-34" && break || sleep 5
+          done
+
+          echo ">>> List platforms dir:"
+          ls -la "${P4A_SDK_ROOT}/platforms" || true
+          test -d "${P4A_SDK_ROOT}/platforms/android-34" || { echo "android-34 platform missing after install"; exit 1; }
+
+          # Доп. проверка: наличие android.jar (то, что реально ищет p4a/Gradle)
+          test -f "${P4A_SDK_ROOT}/platforms/android-34/android.jar" || { echo "android.jar not found under android-34"; exit 1; }
 
       - name: "Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)"
         shell: bash
@@ -129,8 +140,9 @@ jobs:
 
           echo "======= ENV (ANDROID/P4A/JAVA/GRADLE) ======="
           env | sort | grep -E 'ANDROID|P4A|JAVA|GRADLE' || true
-          echo "======= SDK structure (top 120 lines) ======="
-          ls -R "$ANDROID_SDK_ROOT" | head -n 120 || true
+          echo "======= SDK platforms present ======="
+          ls -la "${ANDROID_SDK_ROOT}/platforms" || true
+          echo "android.jar exists?"; ls -l "${ANDROID_SDK_ROOT}/platforms/android-34/android.jar" || true
 
           rm -f buildozer.log
           echo ">>> START buildozer android release (tee logging)"
