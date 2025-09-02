@@ -10,11 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Тот же SDK-root, что использует buildozer/p4a
-      P4A_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      # Явно подсказуем p4a/buildozer версии
+      # ВАЖНО: используем SDK-root ровно в $HOME, куда смотрит buildozer/p4a
+      P4A_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
+      ANDROID_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
+      ANDROID_HOME: $HOME/.buildozer/android/platform/android-sdk
+      # Явно подсказуем p4a версии
       ANDROIDAPI: "34"
       ANDROIDMINAPI: "26"
       ANDROIDNDKVER: "r25b"
@@ -37,37 +37,49 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install buildozer cython
 
-      # Устанавливаем commandline-tools прямо в P4A_SDK_ROOT и делаем "старый" путь tools/bin/sdkmanager
+      # 1) Ставим cmdline-tools прямо в $HOME/.buildozer/...
       - name: Install Android SDK command-line tools into Buildozer SDK root
         run: |
           mkdir -p "${P4A_SDK_ROOT}/cmdline-tools"
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O /tmp/cli-tools.zip
           unzip -q /tmp/cli-tools.zip -d "${P4A_SDK_ROOT}/cmdline-tools"
           mv "${P4A_SDK_ROOT}/cmdline-tools/cmdline-tools" "${P4A_SDK_ROOT}/cmdline-tools/latest"
+
+          # Добавляем sdkmanager и platform-tools в PATH
           echo "${P4A_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${P4A_SDK_ROOT}/platform-tools" >> $GITHUB_PATH
+
+          # Совместимость со старым путём, куда исторически смотрит buildozer:
           mkdir -p "${P4A_SDK_ROOT}/tools/bin"
           ln -sf "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "${P4A_SDK_ROOT}/tools/bin/sdkmanager"
 
+      # 2) Принимаем лицензии и ставим стабильные пакеты (34.0.0) в тот же SDK-root
       - name: Accept licenses & install stable SDK packages
         run: |
-          yes | "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+          yes | "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" --licenses || true
+          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          # Хак: если p4a всё равно попросит 36.1-rc1, подсовываем симлинк на 34.0.0
+
+          # Хак совместимости: если p4a вдруг попросит preview 36.1-rc1, подсовываем ссылку на 34.0.0
           if [ ! -d "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1" ]; then
             ln -s "${P4A_SDK_ROOT}/build-tools/34.0.0" "${P4A_SDK_ROOT}/build-tools/36.1.0-rc1"
           fi
-          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --list | head -n 80 || true
 
+          # Диагностика
+          ls -la "${P4A_SDK_ROOT}/build-tools" || true
+          "${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${P4A_SDK_ROOT}" --list | head -n 60 || true
+
+      # 3) Кейсстор из секретов (обязательно заранее добавьте KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD)
       - name: Decode keystore (from GitHub Secret)
         run: |
           echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
 
+      # 4) Сборка release
       - name: Build release APK with Buildozer
         run: |
           buildozer -v android release
 
+      # 5) Подпись jarsigner
       - name: Sign APK with jarsigner
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -80,6 +92,7 @@ jobs:
             -keypass "$KEYPASS" \
             bin/*-release-unsigned.apk "$ALIAS"
 
+      # 6) zipalign + apksigner
       - name: Align and re-sign with apksigner
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -96,6 +109,7 @@ jobs:
             --out CNCChecklist-signed.apk aligned.apk
           apksigner verify --print-certs CNCChecklist-signed.apk
 
+      # 7) Артефакт
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
