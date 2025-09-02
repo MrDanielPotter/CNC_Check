@@ -47,7 +47,6 @@ jobs:
           SDK="${P4A_SDK_ROOT}"
 
           # Чистая раскладка SDK
-          mkdir -p "${SDK}"
           mkdir -p "${SDK}/cmdline-tools"
 
           # Скачиваем актуальные commandline-tools (совместимы с Java 17)
@@ -61,7 +60,7 @@ jobs:
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
 
-          # Создаём каталог tools и симлинк на latest для обратной совместимости
+          # Симлинк каталога tools -> cmdline-tools/latest для совместимости с Buildozer/p4a
           rm -rf "${SDK}/tools"
           ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
 
@@ -69,17 +68,10 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-          # Добавляем source.properties в корень и tools/
-          cat > "${SDK}/source.properties" <<EOF
-Pkg.Revision=${ANDROID_BUILD_TOOLS_VERSION}
-Pkg.Path=tools
-EOF
-
+          # Создаём source.properties в корне SDK и в tools/
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
           mkdir -p "${SDK}/tools"
-          cat > "${SDK}/tools/source.properties" <<EOF
-Pkg.Revision=${ANDROID_BUILD_TOOLS_VERSION}
-Pkg.Path=tools
-EOF
+          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
 
       - name: "Accept SDK licenses and install SDK/NDK"
         shell: bash
@@ -111,7 +103,7 @@ EOF
           export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
           export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
-          # Повторим симлинк tools -> cmdline-tools/latest на случай очисток
+          # Повторно убедимся, что есть tools -> cmdline-tools/latest
           if [ ! -e "${ANDROID_SDK_ROOT}/tools" ]; then
             ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
           fi
