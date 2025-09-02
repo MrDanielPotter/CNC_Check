@@ -68,10 +68,23 @@ jobs:
           echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
 
-          # Создаём source.properties в корне SDK и в tools/
+          # Маркеры пакета, чтобы p4a/Buildozer считал SDK валидным
+          # 1) source.properties в корне SDK
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
+          # 2) source.properties в tools/
           mkdir -p "${SDK}/tools"
           printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
+          # 3) package.xml в tools/
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
+            '  <localPackage path="tools" obsolete="false">' \
+            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
+            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
+            '    <display-name>Android SDK Tools 2</display-name>' \
+            '  </localPackage>' \
+            '</sdk:sdk-repository>' \
+            > "${SDK}/tools/package.xml"
 
       - name: "Accept SDK licenses and install SDK/NDK"
         shell: bash
@@ -108,8 +121,8 @@ jobs:
             ln -sfn "${ANDROID_SDK_ROOT}/cmdline-tools/latest" "${ANDROID_SDK_ROOT}/tools"
           fi
 
-          echo "SDK structure before build (top 100 lines):"
-          ls -R "$ANDROID_SDK_ROOT" | head -n 100 || true
+          echo "SDK structure before build (top 120 lines):"
+          ls -R "$ANDROID_SDK_ROOT" | head -n 120 || true
 
           rm -f buildozer.log
           buildozer android release
