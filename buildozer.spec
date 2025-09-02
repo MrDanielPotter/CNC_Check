@@ -37,7 +37,7 @@ android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,CAME
 
 # --- Ориентация/экран ---
 # all | portrait | landscape
-orientation = all
+orientation = portrait
 fullscreen = 0
 
 # --- Архитектуры/цели ---
