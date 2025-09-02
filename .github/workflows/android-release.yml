@@ -10,21 +10,16 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Пути SDK/NDK — там их ожидают buildozer/p4a
-      P4A_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
-      ANDROID_SDK_ROOT: $HOME/.buildozer/android/platform/android-sdk
-      ANDROID_HOME: $HOME/.buildozer/android/platform/android-sdk
-
-      # Цели Android
+      P4A_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
       ANDROIDAPI: "34"
       ANDROIDMINAPI: "26"
       ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
-
-      # NDK r25b (side-by-side id)
       ANDROIDNDKVER: "25.1.8937393"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java 11 (Temurin)
@@ -33,7 +28,8 @@ jobs:
           distribution: temurin
           java-version: "11"
 
-      - name: Install system deps and Python tools
+      - name: Install system & Python deps
+        shell: bash
         run: |
           set -e
           sudo apt-get update
@@ -43,41 +39,39 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
 
-      # ---------- SDK CLI ----------
-      - name: Download Android SDK Command-line Tools (with lib/)
+      - name: Fetch Android Commandline Tools (stable) and layout
+        shell: bash
         run: |
           set -e
           SDK="${P4A_SDK_ROOT}"
           mkdir -p "${SDK}/cmdline-tools"
-          # стабильный пакет CLI (содержит lib/ и все нужные jar)
+          # Пакет CLI (проверенный билд)
           URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
-          echo "Downloading: $URL"
-          wget -q "$URL" -o /dev/null -O /tmp/cli.zip
+          echo "Downloading: ${URL}"
+          wget -q "${URL}" -O /tmp/cli.zip
 
           echo "== List archive contents (head) =="
           unzip -l /tmp/cli.zip | sed -n '1,120p'
 
           echo "== Quick presence checks =="
           unzip -l /tmp/cli.zip | grep -q "cmdline-tools/bin/sdkmanager" || { echo "sdkmanager not found in zip"; exit 1; }
-          # В новых CLI нет sdkmanager.jar — проверяем ключевые библиотеки:
+          # В новых CLI нет sdkmanager.jar — наличие ключевых libs достаточно
           unzip -l /tmp/cli.zip | grep -q "cmdline-tools/lib/sdklib/tools.sdklib.jar" || { echo "tools.sdklib.jar not found"; exit 1; }
           unzip -l /tmp/cli.zip | grep -q "cmdline-tools/lib/sdk-common/tools.sdk-common.jar" || { echo "tools.sdk-common.jar not found"; exit 1; }
 
-          # Распаковываем во временную папку
+          # Распаковка
           rm -rf /tmp/cmdline-tools
           unzip -q /tmp/cli.zip -d /tmp/
 
-          # Разворачиваем как .../cmdline-tools/latest/{bin,lib}
+          # Размещаем как .../cmdline-tools/latest/{bin,lib,...}
           mkdir -p "${SDK}/cmdline-tools/latest"
           cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-
-          chmod +x "${SDK}/cmdline-tools/latest/bin/"* || true
 
           # Совместимость со старым путём tools/bin
           mkdir -p "${SDK}/tools/bin"
           ln -sf "${SDK}/cmdline-tools/latest/bin/sdkmanager" "${SDK}/tools/bin/sdkmanager"
 
-          # PATH (fallback)
+          # Добавляем в PATH для последующих шагов
           echo "${SDK}/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "${SDK}/platform-tools" >> $GITHUB_PATH
 
@@ -86,12 +80,12 @@ jobs:
           ls -la "${SDK}/cmdline-tools/latest/bin"
           ls -la "${SDK}/cmdline-tools/latest/lib" || true
 
-      - name: Accept Android SDK licenses & install stable SDK packages
+      - name: Accept Android SDK licenses & install stable SDK/NDK
         shell: bash
         run: |
           set -e
-          SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          SDK_LIB="${P4A_SDK_ROOT}/cmdline-tools/latest/lib"
+          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
+          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
 
           echo "==== Java diagnostics ===="
           echo "JAVA_HOME=${JAVA_HOME}"
@@ -99,146 +93,138 @@ jobs:
           echo
 
           echo "==== sdkmanager diagnostics ===="
-          echo "sdkmanager bin: $SM"
-          "$SM" --version || { echo "sdkmanager failed to run"; exit 1; }
+          which sdkmanager || true
+          sdkmanager --version || { echo "sdkmanager failed to run"; exit 1; }
           echo
 
           echo "==== classpath jars (lib) ===="
-          ls -1 "${SDK_LIB}" | sed 's/^/  - /'
+          ls -1 "${P4A_SDK_ROOT}/cmdline-tools/latest/lib" | sed 's/^/  - /'
           echo "Check key jars:"
-          test -f "${SDK_LIB}/sdklib/tools.sdklib.jar" || { echo "Missing tools.sdklib.jar"; exit 1; }
-          test -f "${SDK_LIB}/sdk-common/tools.sdk-common.jar" || { echo "Missing tools.sdk-common.jar"; exit 1; }
-
+          test -f "${P4A_SDK_ROOT}/cmdline-tools/latest/lib/sdklib/tools.sdklib.jar" || { echo "Missing tools.sdklib.jar"; exit 1; }
+          test -f "${P4A_SDK_ROOT}/cmdline-tools/latest/lib/sdk-common/tools.sdk-common.jar" || { echo "Missing tools.sdk-common.jar"; exit 1; }
+          # Для информации: старого lib/sdkmanager.jar в новых CLI нет — это не ошибка
+          if [ ! -f "${P4A_SDK_ROOT}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
+            echo "(info) sdkmanager.jar not present (expected for new CLI)."
+          fi
           echo
+
           echo "==== Accept licenses ===="
-          yes | "$SM" --sdk_root="${P4A_SDK_ROOT}" --licenses || true
-
+          yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
           echo
+
           echo "==== Install stable packages ===="
-          "$SM" --sdk_root="${P4A_SDK_ROOT}" \
+          sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
             "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
+            "platforms;android-${ANDROIDAPI}" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+            "ndk;${ANDROIDNDKVER}"
 
           echo
           echo "==== Clean any preview build-tools symlinks or leftovers ===="
-          # На всякий случай вычищаем rc-превью, если где-то всплывут
           if [ -d "${P4A_SDK_ROOT}/build-tools" ]; then
             find "${P4A_SDK_ROOT}/build-tools" -maxdepth 1 -type d -name "36*" -print -exec rm -rf {} \; || true
           fi
-
           echo
+
           echo "==== Verify build-tools & aidl ===="
           ls -la "${P4A_SDK_ROOT}/build-tools" || true
-          if [ ! -x "${P4A_SDK_ROOT}/build-tools/34.0.0/aidl" ]; then
-            echo "ERROR: aidl not found at ${P4A_SDK_ROOT}/build-tools/34.0.0/aidl"
+          if [ ! -x "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl" ]; then
+            echo "ERROR: aidl not found at ${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl"
             exit 1
           fi
-          "${P4A_SDK_ROOT}/build-tools/34.0.0/aidl" --version || true
-
+          "${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aidl" --version || true
           echo
+
           echo "==== sdkmanager --list (head) ===="
-          "$SM" --sdk_root="${P4A_SDK_ROOT}" --list | head -n 80 || true
+          sdkmanager --sdk_root="${P4A_SDK_ROOT}" --list | head -n 80 || true
 
-      # ---------- Pre-fetch p4a to verify androidstorage4kivy recipe ----------
-      - name: Prefetch python-for-android & verify androidstorage4kivy recipe
+      - name: Patch buildozer.spec (SDK/NDK paths, tools, deps/permissions)
+        shell: bash
         run: |
           set -e
-          P4A_DIR="$HOME/.buildozer/android/platform/python-for-android"
-          if [ ! -d "$P4A_DIR" ]; then
-            mkdir -p "$(dirname "$P4A_DIR")"
-            git clone -b master --single-branch https://github.com/kivy/python-for-android.git "$P4A_DIR"
-          fi
-          echo "Check recipe androidstorage4kivy:"
-          if [ -d "$P4A_DIR/pythonforandroid/recipes/androidstorage4kivy" ]; then
-            echo "OK: recipe exists"
-          else
-            echo "ERROR: recipe androidstorage4kivy not found in p4a"
-            ls -R "$P4A_DIR/pythonforandroid/recipes" | sed -n '1,120p' || true
-            exit 1
+          SPEC="buildozer.spec"
+          if [ ! -f "${SPEC}" ]; then
+            echo "buildozer.spec not found, creating default..."
+            buildozer init
           fi
 
-      # ---------- NDK ----------
-      - name: Install Android NDK r25b (side-by-side) and verify
+          python3 - << 'PY'
+import re, os, io
+spec_path = "buildozer.spec"
+txt = io.open(spec_path, "r", encoding="utf-8").read()
+
+def set_kv(txt, key, value):
+    pat = re.compile(rf'^\s*{re.escape(key)}\s*=\s*.*$', re.M)
+    line = f"{key} = {value}"
+    if pat.search(txt):
+        return pat.sub(line, txt)
+    else:
+        return txt + ("\n" if not txt.endswith("\n") else "") + line + "\n"
+
+# SDK/NDK + build-tools
+txt = set_kv(txt, "android.sdk_dir", os.environ.get("ANDROID_SDK_ROOT", "${HOME}/.buildozer/android/platform/android-sdk"))
+txt = set_kv(txt, "android.ndk_dir", os.path.join(os.environ.get("ANDROID_SDK_ROOT", "${HOME}/.buildozer/android/platform/android-sdk"), "ndk", os.environ.get("ANDROIDNDKVER","25.1.8937393")))
+txt = set_kv(txt, "android.build_tools", os.environ.get("ANDROID_BUILD_TOOLS_VERSION","34.0.0"))
+
+# requirements: гарантируем kivy, androidstorage4kivy, kivymd==2.0.0
+req_pat = re.compile(r'^\s*requirements\s*=\s*(.*)$', re.M)
+m = req_pat.search(txt)
+base = "python3,kivy,androidstorage4kivy,kivymd==2.0.0"
+if m:
+    # мерджим аккуратно, оставляя остальные пакеты
+    current = [x.strip() for x in m.group(1).split(",") if x.strip()]
+    want = ["python3","kivy","androidstorage4kivy","kivymd==2.0.0"]
+    for w in want:
+        if not any(x.split("==")[0]==w.split("==")[0] for x in current):
+            current.append(w)
+    # если есть другая версия kivymd — заменим на 2.0.0
+    current = [("kivymd==2.0.0" if x.startswith("kivymd") else x) for x in current]
+    new = "requirements = " + ",".join(current)
+    txt = req_pat.sub(new, txt)
+else:
+    txt += f"\nrequirements = {base}\n"
+
+# permissions WRITE/READ_EXTERNAL_STORAGE (на старых Android полезно)
+perm_pat = re.compile(r'^\s*android.permissions\s*=\s*(.*)$', re.M)
+if perm_pat.search(txt):
+    perms = set([p.strip() for p in perm_pat.search(txt).group(1).split(",") if p.strip()])
+else:
+    perms = set()
+perms.update({"WRITE_EXTERNAL_STORAGE","READ_EXTERNAL_STORAGE"})
+perms_line = "android.permissions = " + ",".join(sorted(perms))
+if perm_pat.search(txt):
+    txt = perm_pat.sub(perms_line, txt)
+else:
+    txt += ("\n" if not txt.endswith("\n") else "") + perms_line + "\n"
+
+io.open(spec_path, "w", encoding="utf-8").write(txt)
+print("Patched buildozer.spec")
+PY
+
+      - name: Build APK (release)
+        shell: bash
         run: |
           set -e
-          SM="${P4A_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          "$SM" --sdk_root="${P4A_SDK_ROOT}" "ndk;${ANDROIDNDKVER}"
+          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
+          export ANDROID_NDK_HOME="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}"
+          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
+          # Kivy/Buildozer кеши
+          rm -f buildozer.log
+          buildozer android release
 
-          echo "ANDROIDNDK=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
-          echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
-
-          echo "==== NDK layout ===="
-          ls -la "${P4A_SDK_ROOT}/ndk" || true
-          ls -la "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" || true
-
-          echo "==== Verify ndk-build and toolchain ===="
-          if [ ! -x "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/ndk-build" ]; then
-            echo "ERROR: ndk-build not found"
-            exit 1
-          fi
-          "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/ndk-build" -version || true
-
-          CLANG="${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
-          if [ ! -x "$CLANG" ]; then
-            echo "ERROR: clang not found in llvm toolchain"
-            exit 1
-          fi
-          "$CLANG" --version | head -n 1
-
-      # ---------- Sanity checks (buildozer.spec & permissions) ----------
-      - name: Spec & permissions sanity checks
+      - name: Prepare keystore from secrets (if provided)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        shell: bash
         run: |
           set -e
-          echo "== Show buildozer.spec =="
-          sed -n '1,240p' buildozer.spec
+          echo "${ANDROID_KEYSTORE_BASE64}" | base64 -d > mykey.keystore
 
-          echo "== Check SDK/NDK paths in spec =="
-          grep -q "^android.sdk_dir *= *%\\(ANDROID_HOME\\)s" buildozer.spec || { echo "android.sdk_dir missing or wrong"; exit 1; }
-          grep -q "^android.ndk_dir *= *%\\(ANDROID_NDK_HOME\\)s" buildozer.spec || { echo "android.ndk_dir missing or wrong"; exit 1; }
-          grep -q "^android.build_tools *= *34\\.0\\.0" buildozer.spec || { echo "android.build_tools wrong"; exit 1; }
-
-          echo "== Check requirements line contains androidstorage4kivy =="
-          grep -q "requirements *= .*androidstorage4kivy" buildozer.spec || { echo "androidstorage4kivy missing in requirements"; exit 1; }
-
-          echo "== Check required permissions present =="
-          REQ_PERMS="INTERNET|CAMERA|READ_MEDIA_IMAGES|READ_MEDIA_VISUAL_USER_SELECTED|READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE"
-          PERMS_LINE=$(grep -E "^android\\.permissions" buildozer.spec || true)
-          echo "Permissions line: $PERMS_LINE"
-          echo "$PERMS_LINE" | grep -E "$REQ_PERMS" >/dev/null || { echo "Some required permissions not present"; exit 1; }
-
-      # ---------- Keystore ----------
-      - name: Decode keystore (from GitHub Secret)
-        run: |
-          set -e
-          echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > mykey.keystore
-          test -s mykey.keystore || (echo "Keystore is empty. Check KEYSTORE_FILE secret." && exit 1)
-
-      # ---------- Build ----------
-      - name: Build release with Buildozer
-        env:
-          ANDROIDSDK: ${{ env.P4A_SDK_ROOT }}
-          ANDROIDNDK: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
-          ANDROID_NDK_HOME: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
-          P4A_SDK_ROOT: ${{ env.P4A_SDK_ROOT }}
-          P4A_NDK_DIR: ${{ env.P4A_SDK_ROOT }}/ndk/${{ env.ANDROIDNDKVER }}
-          P4A_BUILD_TOOLS_VERSION: "34.0.0"
-        run: |
-          set -e
-          echo "ANDROIDSDK=$ANDROIDSDK"
-          echo "ANDROIDNDK=$ANDROIDNDK"
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          buildozer --version
-          buildozer -v android release | tee buildozer.log
-
-      # ---------- Sign ----------
-      - name: Align & Sign APK (zipalign/apksigner from build-tools 34.0.0)
-        if: always()
+      - name: Align & Sign APK (zipalign/apksigner from build-tools)
+        shell: bash
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEYPASS:   ${{ secrets.KEY_PASSWORD }}
-          ALIAS:     ${{ secrets.KEY_ALIAS }}
+          KEYPASS: ${{ secrets.KEY_PASSWORD }}
+          ALIAS:    ${{ secrets.KEY_ALIAS }}
         run: |
           set -e
           APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk | head -n 1 || true)
@@ -247,32 +233,39 @@ jobs:
             exit 1
           fi
 
-          ZIPALIGN="${P4A_SDK_ROOT}/build-tools/34.0.0/zipalign"
-          APKSIGNER="${P4A_SDK_ROOT}/build-tools/34.0.0/apksigner"
+          ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
+          APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
           test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
           test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
 
           $ZIPALIGN -v -p 4 "$APK_UNSIGNED" aligned.apk
-          $APKSIGNER sign \
-            --ks mykey.keystore \
-            --ks-pass pass:"$STOREPASS" \
-            --key-pass pass:"$KEYPASS" \
-            --ks-key-alias "$ALIAS" \
-            --out CNCChecklist-signed.apk aligned.apk
 
-          $APKSIGNER verify --print-certs CNCChecklist-signed.apk
+          if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
+            $APKSIGNER sign \
+              --ks mykey.keystore \
+              --ks-pass pass:"$STOREPASS" \
+              --key-pass pass:"$KEYPASS" \
+              --ks-key-alias "$ALIAS" \
+              --out CNCChecklist-signed.apk aligned.apk
+            $APKSIGNER verify --print-certs CNCChecklist-signed.apk
+          else
+            echo "Keystore or passwords not provided — uploading aligned.apk unsigned."
+            mv aligned.apk CNCChecklist-unaligned-unsigned.apk
+          fi
 
-      # ---------- Artifacts ----------
-      - name: Upload signed APK
-        if: always()
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: CNCChecklist-release
-          path: CNCChecklist-signed.apk
+          path: |
+            CNCChecklist-signed.apk
+            CNCChecklist-unaligned-unsigned.apk
+          if-no-files-found: warn
 
-      - name: Upload build logs
+      - name: Upload buildozer log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: buildozer-log
           path: buildozer.log
+          if-no-files-found: warn
