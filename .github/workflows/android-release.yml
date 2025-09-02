@@ -2,7 +2,7 @@ name: Build Android Release APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v3
@@ -39,9 +40,9 @@ jobs:
           KEYPASS: ${{ secrets.KEY_PASSWORD }}
           ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          jarsigner -verbose -keystore mykey.keystore -storepass "$STOREPASS" -keypass "$KEYPASS" bin/*.apk "$ALIAS"
+          jarsigner -verbose -keystore mykey.keystore -storepass "$STOREPASS" -keypass "$KEYPASS" bin/*-release-unsigned.apk "$ALIAS"
 
-      - name: Align and Sign using apksigner
+      - name: Align and Sign with apksigner
         env:
           STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
           KEYPASS: ${{ secrets.KEY_PASSWORD }}
@@ -49,11 +50,11 @@ jobs:
           sudo apt install -y zipalign apksigner
           for apk in bin/*-release-unsigned.apk; do
             zipalign -v 4 "$apk" aligned.apk
-            apksigner sign --ks mykey.keystore --ks-pass pass:"$STOREPASS" --key-pass pass:"$KEYPASS" --out signed.apk aligned.apk
+            apksigner sign --ks mykey.keystore --ks-pass pass:"$STOREPASS" --key-pass pass:"$KEYPASS" --out CNCChecklist-signed.apk aligned.apk
           done
 
       - name: Upload signed APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: CNCChecklist-release.apk
-          path: signed.apk
+          name: CNCChecklist-release
+          path: CNCChecklist-signed.apk
