@@ -2,8 +2,7 @@ name: Build Android Release APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -11,256 +10,162 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      P4A_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      ANDROID_HOME: ${{ github.workspace }}/.buildozer/android/platform/android-sdk
-      ANDROIDAPI: "34"
-      ANDROIDMINAPI: "26"
-      ANDROID_BUILD_TOOLS_VERSION: "34.0.0"
-      ANDROIDNDKVER: "25.1.8937393"
+      # Глобальные пути для SDK/NDK
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      ANDROID_HOME: ${{ runner.temp }}/android-sdk
+      ANDROID_NDK_VERSION: "25.2.9519653"   # стабильная для Kivy / p4a
+      ANDROID_BUILD_TOOLS: "34.0.0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (Temurin)
+      # --- Python 3.11 (как у тебя локально)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # --- Java 11 (Temurin). Проверено: Gradle/Buildozer нормально работают с 11.
+      - name: Setup Java 11 (Temurin)
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          distribution: "temurin"
+          java-version: "11"
 
-      - name: Install system and Python deps
-        shell: bash
+      - name: Verify Java toolchain
         run: |
-          set -e
+          java -version
+          javac -version
+          echo "JAVA_HOME=$JAVA_HOME"
+
+      # --- Системные пакеты для сборки
+      - name: Install system deps
+        run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            git zip unzip wget curl rsync build-essential ccache \
-            libffi-dev libssl-dev libsqlite3-dev zlib1g-dev
-          python3 -m pip install --upgrade pip
-          python3 -m pip install "buildozer>=1.5.0" "Cython<3.1" wheel
+          sudo apt-get install -y \
+            unzip wget git libssl-dev libffi-dev build-essential \
+            libsqlite3-dev zlib1g-dev libbz2-dev libreadline-dev \
+            libncurses5-dev libncursesw5-dev liblzma-dev
 
-      - name: Fetch Android Commandline Tools and layout (with tools symlink)
+      # --- Устанавливаем Buildozer и базовые питон-зависимости для сборки
+      - name: Install Python deps (buildozer)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "cython==0.29.37" buildozer
+
+      # --- Android SDK/NDK через готовый action
+      - name: Setup Android SDK, Build-Tools and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Поставим нужные уровни прямо через sdkmanager:
+          api-levels: "34"
+          build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
+          ndk: ${{ env.ANDROID_NDK_VERSION }}
+
+      # --- Фиксируем переменные окружения, понятные Buildozer
+      - name: Export Android envs for Buildozer
+        run: |
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+          echo "PATH=$PATH:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools" >> $GITHUB_ENV
+
+      # --- Быстрый self-check sdkmanager.jar layout + принятие лицензий
+      - name: Fix cmdline-tools layout (sdkmanager.jar) and accept licenses
         shell: bash
         run: |
-          set -e
-          SDK="${P4A_SDK_ROOT}"
-          mkdir -p "${SDK}/cmdline-tools"
-          URL="https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip"
-          wget -q "${URL}" -O /tmp/cli.zip
-          rm -rf /tmp/cmdline-tools
-          unzip -q /tmp/cli.zip -d /tmp/
-
-          rm -rf "${SDK}/cmdline-tools/latest"
-          mkdir -p "${SDK}/cmdline-tools/latest"
-          cp -r /tmp/cmdline-tools/* "${SDK}/cmdline-tools/latest/"
-
-          # tools -> cmdline-tools/latest (нужно p4a)
-          rm -rf "${SDK}/tools"
-          ln -sfn "${SDK}/cmdline-tools/latest" "${SDK}/tools"
-
-          # В PATH
-          echo "${SDK}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "${SDK}/platform-tools" >> "$GITHUB_PATH"
-
-          # Маркеры для p4a (валидность SDK)
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/source.properties"
-          mkdir -p "${SDK}/tools"
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "${SDK}/tools/source.properties"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
-            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
-            '  <localPackage path="tools" obsolete="false">' \
-            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
-            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
-            '    <display-name>Android SDK Tools 2</display-name>' \
-            '  </localPackage>' \
-            '</sdk:sdk-repository>' \
-            > "${SDK}/tools/package.xml"
-
-      - name: Accept licenses & install core SDK/NDK
-        shell: bash
-        run: |
-          set -e
-          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
-          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${P4A_SDK_ROOT}/platform-tools:${PATH}"
-
-          yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" --licenses || true
-          sdkmanager --sdk_root="${P4A_SDK_ROOT}" \
-            "platform-tools" \
-            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
-            "ndk;${ANDROIDNDKVER}"
-
-      - name: Ensure Android platform 34 is installed (retry)
-        shell: bash
-        run: |
-          set -e
-          export ANDROID_SDK_ROOT="${P4A_SDK_ROOT}"
-          export PATH="${P4A_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
-
-          for i in 1 2 3; do
-            echo ">>> Install attempt $i: platforms;android-34"
-            yes | sdkmanager --sdk_root="${P4A_SDK_ROOT}" "platforms;android-34" && break || sleep 5
-          done
-
-          echo ">>> List platforms dir:"
-          ls -la "${P4A_SDK_ROOT}/platforms" || true
-          test -d "${P4A_SDK_ROOT}/platforms/android-34"
-          test -f "${P4A_SDK_ROOT}/platforms/android-34/android.jar"
-
-      - name: Create p4a Home symlinks to prepared SDK/NDK (incl. r25b alias)
-        shell: bash
-        run: |
-          set -e
-          mkdir -p "$HOME/.buildozer/android/platform"
-          ln -sfn "${P4A_SDK_ROOT}" "$HOME/.buildozer/android/platform/android-sdk"
-          ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-${ANDROIDNDKVER}"
-          ln -sfn "${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" "$HOME/.buildozer/android/platform/android-ndk-r25b"
-          echo "P4A_SDK_DIR=${P4A_SDK_ROOT}" >> $GITHUB_ENV
-          echo "P4A_NDK_DIR=${P4A_SDK_ROOT}/ndk/${ANDROIDNDKVER}" >> $GITHUB_ENV
-
-      - name: Build APK (release) — mirror SDK to $HOME for p4a and run
-        shell: bash
-        run: |
-          set -e
-          # p4a реально сканирует дом. путь: ~/.buildozer/android/platform/android-sdk
-          export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
-          export ANDROID_NDK_HOME="$HOME/.buildozer/android/platform/android-ndk-r25b"
-          export ANDROIDAPI=34
-          export ANDROIDMINAPI=26
-          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-
-          # Зеркалим подготовленный SDK в домашний SDK p4a
-          SRC="${{ github.workspace }}/.buildozer/android/platform/android-sdk"
-          DST="$HOME/.buildozer/android/platform/android-sdk"
-          mkdir -p "$DST/platforms" "$DST/build-tools" "$DST/ndk" "$DST/cmdline-tools" "$DST/platform-tools"
-
-          rsync -a --delete "$SRC/platforms/"      "$DST/platforms/"
-          rsync -a          "$SRC/build-tools/"    "$DST/build-tools/"
-          rsync -a          "$SRC/ndk/"            "$DST/ndk/"
-          rsync -a          "$SRC/cmdline-tools/"  "$DST/cmdline-tools/"
-          rsync -a          "$SRC/platform-tools/" "$DST/platform-tools/" || true
-
-          # Маркеры и «старый» tools/ с sdkmanager в нужном месте
-          ln -sfn "$DST/cmdline-tools/latest" "$DST/tools"
-          mkdir -p "$DST/tools/bin"
-          if [ ! -e "$DST/tools/bin/sdkmanager" ]; then
-            ln -sfn "$DST/cmdline-tools/latest/bin/sdkmanager" "$DST/tools/bin/sdkmanager"
-          fi
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/source.properties"
-          printf "Pkg.Revision=%s\nPkg.Path=tools\n" "${ANDROID_BUILD_TOOLS_VERSION}" > "$DST/tools/source.properties"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
-            '<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/01">' \
-            '  <localPackage path="tools" obsolete="false">' \
-            '    <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="sdk:genericDetailsType"/>' \
-            '    <revision><major>2</major><minor>0</minor><micro>0</micro></revision>' \
-            '    <display-name>Android SDK Tools 2</display-name>' \
-            '  </localPackage>' \
-            '</sdk:sdk-repository>' \
-            > "$DST/tools/package.xml"
-
-          echo "======= SDK paths p4a will scan ======="
-          ls -la "$DST/platforms" || true
-          ls -l  "$DST/platforms/android-34/android.jar" || true
-
-          # ВАЖНО: насильно передаём пути SDK/NDK самому p4a
-          export ANDROIDSDK="$ANDROID_SDK_ROOT"
-          export P4A_CMDLINE_ARGS="--sdk-dir=$ANDROID_SDK_ROOT --ndk-dir=$ANDROID_NDK_HOME --android-api=$ANDROIDAPI --ndk-api=$ANDROIDMINAPI"
-
-          echo "======= ENV (ANDROID*/P4A*) ======="
-          env | sort | grep -E 'ANDROID(SDK|_SDK|API|NDK)|P4A' || true
-
-          rm -f buildozer.log
-          echo ">>> START buildozer android release (tee logging)"
-          set -o pipefail
-          buildozer android release 2>&1 | tee buildozer.log
-
-      - name: Show buildozer log tail
-        if: always()
-        shell: bash
-        run: |
-          if [ -f buildozer.log ]; then
-            echo "===== LAST 300 lines of buildozer.log ====="
-            tail -n 300 buildozer.log
-          else:
-            echo "No buildozer.log was generated."
-          fi
-
-      - name: Inspect bin folder
-        if: always()
-        shell: bash
-        run: |
-          echo "== ls -R bin"
-          ls -R bin || echo "bin/ is missing"
-          echo "== grep ERROR in buildozer.log"
-          if [ -f buildozer.log ]; then grep -nEi 'error|failed|exception' buildozer.log || true; fi
-
-      - name: Decode keystore (from GitHub Secret)
-        if: always()
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          set -e
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > mykey.keystore
-            if [ ! -s mykey.keystore ]; then
-              echo "Keystore is empty. Check ANDROID_KEYSTORE_BASE64 secret."
-              exit 1
+          set -euo pipefail
+          # Если нет latest/, создадим симлинк на существующую версию
+          if [ ! -f "${ANDROID_HOME}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
+            echo "No cmdline-tools/latest detected. Attempting to link an existing version..."
+            if ls -d "${ANDROID_HOME}/cmdline-tools/"*"/lib/sdkmanager.jar" >/dev/null 2>&1; then
+              CTV=$(dirname "$(dirname "$(ls -d ${ANDROID_HOME}/cmdline-tools/*/lib/sdkmanager.jar | head -n1)")")
+              mkdir -p "${ANDROID_HOME}/cmdline-tools"
+              ln -sfn "$CTV" "${ANDROID_HOME}/cmdline-tools/latest"
+              echo "Linked ${CTV} -> cmdline-tools/latest"
             fi
-          else
-            echo "No ANDROID_KEYSTORE_BASE64 provided — skipping decode."
           fi
 
-      - name: Align and Sign APK
-        if: always()
+          # Удалим битые/лишние rc-симлинки build-tools (частая причина падений)
+          if [ -d "${ANDROID_HOME}/build-tools" ]; then
+            find "${ANDROID_HOME}/build-tools" -maxdepth 1 -xtype l -name "*rc*" -print -delete || true
+          fi
+
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses
+
+          # Явно дотянем требуемые компоненты
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      # --- Синхронизируем buildozer.spec под окружение CI (requirements/пути SDK/NDK)
+      - name: Patch buildozer.spec (requirements & Android paths)
         shell: bash
-        env:
-          STOREPASS: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEYPASS: ${{ secrets.KEY_PASSWORD }}
-          ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          set -e
-          APK_UNSIGNED=$(ls -1 bin/*-release-unsigned.apk 2>/dev/null | head -n 1 || true)
-          if [ -z "$APK_UNSIGNED" ]; then
-            echo "No unsigned APK found in bin/ — skipping sign."
-            exit 0
+          set -euo pipefail
+          SPEC="buildozer.spec"
+
+          if [ ! -f "$SPEC" ]; then
+            echo "ERROR: buildozer.spec not found in repo root"; exit 1
           fi
 
-          ZIPALIGN="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/zipalign"
-          APKSIGNER="${P4A_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/apksigner"
-          test -x "$ZIPALIGN" || (echo "zipalign not found" && exit 1)
-          test -x "$APKSIGNER" || (echo "apksigner not found" && exit 1)
-
-          "$ZIPALIGN" -v -p 4 "$APK_UNSIGNED" aligned.apk
-
-          if [ -f mykey.keystore ] && [ -n "$STOREPASS" ] && [ -n "$KEYPASS" ] && [ -n "$ALIAS" ]; then
-            "$APKSIGNER" sign \
-              --ks mykey.keystore \
-              --ks-pass pass:"$STOREPASS" \
-              --key-pass pass:"$KEYPASS" \
-              --ks-key-alias "$ALIAS" \
-              --out CNCChecklist-signed.apk aligned.apk
-            "$APKSIGNER" verify --print-certs CNCChecklist-signed.apk
+          # 1) requirements
+          if grep -q "^requirements" "$SPEC"; then
+            sed -i 's/^requirements *=.*/requirements = python3,kivy,kivymd==2.0.0,reportlab,pillow,plyer,androidstorage4kivy/' "$SPEC"
           else
-            echo "Keystore or passwords not provided — uploading aligned.apk unsigned."
-            mv aligned.apk CNCChecklist-unaligned-unsigned.apk
+            echo "requirements = python3,kivy,kivymd==2.0.0,reportlab,pillow,plyer,androidstorage4kivy" >> "$SPEC"
           fi
 
-      - name: Upload APKs from bin
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: CNCChecklist-release
-          path: |
-            bin/**/*.apk
-          if-no-files-found: warn
+          # 2) Добавим в конец секцию [buildozer] с путями, если их нет
+          if ! grep -q "^\[buildozer\]" "$SPEC"; then
+            {
+              echo ""
+              echo "[buildozer]"
+              echo "android.sdk_dir = ${ANDROID_HOME}"
+              echo "android.ndk_dir = ${ANDROID_NDK_HOME}"
+              echo "android.build_tools = ${ANDROID_BUILD_TOOLS}"
+            } >> "$SPEC"
+          else
+            # обновим/добавим значения внутри секции
+            sed -i "s|^android.sdk_dir *=.*|android.sdk_dir = ${ANDROID_HOME}|g" "$SPEC" || true
+            sed -i "s|^android.ndk_dir *=.*|android.ndk_dir = ${ANDROID_NDK_HOME}|g" "$SPEC" || true
+            if grep -q "^android.build_tools" "$SPEC"; then
+              sed -i "s|^android.build_tools *=.*|android.build_tools = ${ANDROID_BUILD_TOOLS}|g" "$SPEC"
+            else
+              sed -i "/^\[buildozer\]/a android.build_tools = ${ANDROID_BUILD_TOOLS}" "$SPEC"
+            fi
+          fi
 
-      - name: Upload buildozer log
-        if: always()
+          echo "------ buildozer.spec (tail) ------"
+          tail -n 50 "$SPEC"
+
+      # --- Проверка наличия шрифта (для кириллицы в PDF). Не валим сборку, просто предупреждаем.
+      - name: Check DejaVu font asset
+        run: |
+          if [ ! -f "assets/DejaVuSans.ttf" ]; then
+            echo "::warning::assets/DejaVuSans.ttf is missing. PDF Cyrillic text may render as squares."
+          fi
+
+      # --- Сборка Release APK
+      - name: Build release APK
+        run: |
+          buildozer android release --verbose
+        # Если хочешь Debug параллельно, можно: buildozer android debug
+
+      # --- Список результатов и загрузка артефактов
+      - name: List build outputs
+        run: |
+          echo "Bin dir:"
+          ls -la bin || true
+          echo "Find APKs:"
+          find . -type f -name "*.apk" -print || true
+
+      - name: Upload APK artifacts (release & debug if present)
         uses: actions/upload-artifact@v4
         with:
-          name: buildozer-log
-          path: buildozer.log
+          name: android-apks
+          path: |
+            bin/*.apk
+            **/*.apk
           if-no-files-found: warn
