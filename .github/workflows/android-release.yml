@@ -9,24 +9,20 @@ jobs:
   build-release:
     runs-on: ubuntu-latest
 
+    # Только простые строки без выражений
     env:
-      # Глобальные пути для SDK/NDK
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
-      ANDROID_HOME: ${{ runner.temp }}/android-sdk
-      ANDROID_NDK_VERSION: "25.2.9519653"   # стабильная для Kivy / p4a
+      ANDROID_NDK_VERSION: "25.2.9519653"
       ANDROID_BUILD_TOOLS: "34.0.0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Python 3.11 (как у тебя локально)
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # --- Java 11 (Temurin). Проверено: Gradle/Buildozer нормально работают с 11.
       - name: Setup Java 11 (Temurin)
         uses: actions/setup-java@v4
         with:
@@ -39,7 +35,6 @@ jobs:
           javac -version
           echo "JAVA_HOME=$JAVA_HOME"
 
-      # --- Системные пакеты для сборки
       - name: Install system deps
         run: |
           sudo apt-get update
@@ -48,90 +43,83 @@ jobs:
             libsqlite3-dev zlib1g-dev libbz2-dev libreadline-dev \
             libncurses5-dev libncursesw5-dev liblzma-dev
 
-      # --- Устанавливаем Buildozer и базовые питон-зависимости для сборки
-      - name: Install Python deps (buildozer)
+      - name: Install Buildozer
         run: |
           python -m pip install --upgrade pip
           pip install "cython==0.29.37" buildozer
 
-      # --- Android SDK/NDK через готовый action
+      # Ставит SDK, build-tools и NDK и экспортирует ANDROID_SDK_ROOT
       - name: Setup Android SDK, Build-Tools and NDK
         uses: android-actions/setup-android@v3
         with:
-          # Поставим нужные уровни прямо через sdkmanager:
           api-levels: "34"
           build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
           ndk: ${{ env.ANDROID_NDK_VERSION }}
 
-      # --- Фиксируем переменные окружения, понятные Buildozer
+      # Приводим переменные к виду, который ожидает Buildozer/p4a
       - name: Export Android envs for Buildozer
-        run: |
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-          echo "PATH=$PATH:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools" >> $GITHUB_ENV
-
-      # --- Быстрый self-check sdkmanager.jar layout + принятие лицензий
-      - name: Fix cmdline-tools layout (sdkmanager.jar) and accept licenses
         shell: bash
         run: |
           set -euo pipefail
-          # Если нет latest/, создадим симлинк на существующую версию
-          if [ ! -f "${ANDROID_HOME}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
-            echo "No cmdline-tools/latest detected. Attempting to link an existing version..."
-            if ls -d "${ANDROID_HOME}/cmdline-tools/"*"/lib/sdkmanager.jar" >/dev/null 2>&1; then
-              CTV=$(dirname "$(dirname "$(ls -d ${ANDROID_HOME}/cmdline-tools/*/lib/sdkmanager.jar | head -n1)")")
-              mkdir -p "${ANDROID_HOME}/cmdline-tools"
-              ln -sfn "$CTV" "${ANDROID_HOME}/cmdline-tools/latest"
-              echo "Linked ${CTV} -> cmdline-tools/latest"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "PATH=$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools" >> "$GITHUB_ENV"
+
+      # Чиним layout cmdline-tools (sdkmanager.jar) и принимаем лицензии
+      - name: Fix cmdline-tools layout and accept licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${ANDROID_SDK_ROOT}/cmdline-tools/latest/lib/sdkmanager.jar" ]; then
+            echo "No cmdline-tools/latest detected. Linking an existing version..."
+            CANDIDATE=$(ls -d "${ANDROID_SDK_ROOT}/cmdline-tools/"* 2>/dev/null | head -n1 || true)
+            if [ -n "$CANDIDATE" ] && [ -f "${CANDIDATE}/lib/sdkmanager.jar" ]; then
+              ln -sfn "$CANDIDATE" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+              echo "Linked $CANDIDATE -> cmdline-tools/latest"
             fi
           fi
 
-          # Удалим битые/лишние rc-симлинки build-tools (частая причина падений)
-          if [ -d "${ANDROID_HOME}/build-tools" ]; then
-            find "${ANDROID_HOME}/build-tools" -maxdepth 1 -xtype l -name "*rc*" -print -delete || true
+          if [ -d "${ANDROID_SDK_ROOT}/build-tools" ]; then
+            find "${ANDROID_SDK_ROOT}/build-tools" -maxdepth 1 -xtype l -name "*rc*" -print -delete || true
           fi
 
-          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses
 
-          # Явно дотянем требуемые компоненты
-          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-      # --- Синхронизируем buildozer.spec под окружение CI (requirements/пути SDK/NDK)
+      # Патчим buildozer.spec: requirements и явные пути SDK/NDK/Build-Tools
       - name: Patch buildozer.spec (requirements & Android paths)
         shell: bash
         run: |
           set -euo pipefail
           SPEC="buildozer.spec"
-
           if [ ! -f "$SPEC" ]; then
-            echo "ERROR: buildozer.spec not found in repo root"; exit 1
+            echo "ERROR: buildozer.spec not found"; exit 1
           fi
 
-          # 1) requirements
           if grep -q "^requirements" "$SPEC"; then
             sed -i 's/^requirements *=.*/requirements = python3,kivy,kivymd==2.0.0,reportlab,pillow,plyer,androidstorage4kivy/' "$SPEC"
           else
             echo "requirements = python3,kivy,kivymd==2.0.0,reportlab,pillow,plyer,androidstorage4kivy" >> "$SPEC"
           fi
 
-          # 2) Добавим в конец секцию [buildozer] с путями, если их нет
           if ! grep -q "^\[buildozer\]" "$SPEC"; then
             {
               echo ""
               echo "[buildozer]"
-              echo "android.sdk_dir = ${ANDROID_HOME}"
+              echo "android.sdk_dir = ${ANDROID_SDK_ROOT}"
               echo "android.ndk_dir = ${ANDROID_NDK_HOME}"
               echo "android.build_tools = ${ANDROID_BUILD_TOOLS}"
             } >> "$SPEC"
           else
-            # обновим/добавим значения внутри секции
-            sed -i "s|^android.sdk_dir *=.*|android.sdk_dir = ${ANDROID_HOME}|g" "$SPEC" || true
-            sed -i "s|^android.ndk_dir *=.*|android.ndk_dir = ${ANDROID_NDK_HOME}|g" "$SPEC" || true
-            if grep -q "^android.build_tools" "$SPEC"; then
-              sed -i "s|^android.build_tools *=.*|android.build_tools = ${ANDROID_BUILD_TOOLS}|g" "$SPEC"
+            sed -i "s|^android\\.sdk_dir *=.*|android.sdk_dir = ${ANDROID_SDK_ROOT}|g" "$SPEC" || true
+            sed -i "s|^android\\.ndk_dir *=.*|android.ndk_dir = ${ANDROID_NDK_HOME}|g" "$SPEC" || true
+            if grep -q "^android\\.build_tools" "$SPEC"; then
+              sed -i "s|^android\\.build_tools *=.*|android.build_tools = ${ANDROID_BUILD_TOOLS}|g" "$SPEC"
             else
               sed -i "/^\[buildozer\]/a android.build_tools = ${ANDROID_BUILD_TOOLS}" "$SPEC"
             fi
@@ -140,28 +128,22 @@ jobs:
           echo "------ buildozer.spec (tail) ------"
           tail -n 50 "$SPEC"
 
-      # --- Проверка наличия шрифта (для кириллицы в PDF). Не валим сборку, просто предупреждаем.
       - name: Check DejaVu font asset
         run: |
           if [ ! -f "assets/DejaVuSans.ttf" ]; then
             echo "::warning::assets/DejaVuSans.ttf is missing. PDF Cyrillic text may render as squares."
           fi
 
-      # --- Сборка Release APK
       - name: Build release APK
         run: |
           buildozer android release --verbose
-        # Если хочешь Debug параллельно, можно: buildozer android debug
 
-      # --- Список результатов и загрузка артефактов
       - name: List build outputs
         run: |
-          echo "Bin dir:"
           ls -la bin || true
-          echo "Find APKs:"
           find . -type f -name "*.apk" -print || true
 
-      - name: Upload APK artifacts (release & debug if present)
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-apks
